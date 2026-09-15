@@ -1,7 +1,7 @@
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin
 
-from .models import AuditLog, Entry, EntryComment, EntryFileVersion, ImportRun, Issue, SiteConfig, User
+from .models import AuditLog, Entry, EntryComment, EntryFileVersion, EntryStateEvent, ImportRun, Issue, SiteConfig, User
 
 
 @admin.register(User)
@@ -34,6 +34,13 @@ class EntryFileVersionAdmin(admin.ModelAdmin):
 class EntryCommentAdmin(admin.ModelAdmin):
     list_display = ("entry", "author_name", "created_at")
     search_fields = ("entry__title", "author_name", "body")
+
+
+@admin.register(EntryStateEvent)
+class EntryStateEventAdmin(admin.ModelAdmin):
+    list_display = ("entry", "action", "actor_name", "from_status", "to_status", "created_at")
+    list_filter = ("action", "created_at")
+    search_fields = ("entry__title", "actor_name", "note")
 
 
 admin.site.register(SiteConfig)

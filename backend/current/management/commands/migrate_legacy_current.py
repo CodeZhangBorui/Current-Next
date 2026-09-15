@@ -11,7 +11,7 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 from django.utils import timezone as django_timezone
 
-from current.models import AuditLog, Entry, EntryFileVersion, ImportRun, Issue, SiteConfig, User
+from current.models import AuditLog, Entry, EntryFileVersion, EntryStateEvent, ImportRun, Issue, SiteConfig, User
 
 
 class Command(BaseCommand):
@@ -222,7 +222,7 @@ class Command(BaseCommand):
             if entry_status in (Entry.Status.REVIEWED, Entry.Status.SELECTED):
                 defaults.update({"review_completed_by": reviewer, "review_completed_at": django_timezone.now()})
             if entry_status == Entry.Status.SELECTED:
-                defaults["merged_at"] = django_timezone.now()
+                defaults.update({"closed_from_status": Entry.Status.REVIEWED, "merged_at": django_timezone.now()})
             entry = Entry.objects.update_or_create(uuid=row[0], defaults=defaults)[0]
             source_path = uploads_root / str(entry.uuid)
             if source_path.exists() and not entry.file:
@@ -233,4 +233,16 @@ class Command(BaseCommand):
                     entry=entry,
                     version=1,
                     defaults={"filename": entry.filename or Path(entry.file.name).name, "file": entry.file.name, "uploader": reviewer or submitter, "uploader_name": reviewer_name or selector_name, "source": EntryFileVersion.Source.LEGACY, "note": "从 Current 数据库导入"},
+                )
+            if entry_status in (Entry.Status.REVIEWED, Entry.Status.SELECTED):
+                EntryStateEvent.objects.get_or_create(
+                    entry=entry,
+                    action=EntryStateEvent.Action.REVIEW_COMPLETED,
+                    defaults={"actor": reviewer, "actor_name": reviewer_name, "from_status": Entry.Status.CREATED, "to_status": Entry.Status.REVIEWED, "note": "从 Current 数据库导入"},
+                )
+            if entry_status == Entry.Status.SELECTED:
+                EntryStateEvent.objects.get_or_create(
+                    entry=entry,
+                    action=EntryStateEvent.Action.CLOSED_MERGED,
+                    defaults={"from_status": Entry.Status.REVIEWED, "to_status": Entry.Status.SELECTED, "note": "从 Current 已选录状态导入"},
                 )

@@ -11,9 +11,9 @@ from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
-from .models import Entry, EntryComment, EntryFileVersion, Issue, User
+from .models import Entry, EntryComment, EntryFileVersion, EntryStateEvent, Issue, User
 from .permissions import can_comment_on_entry, is_entry_chief, is_entry_reviewer
-from .serializers import AnnouncementUpdateSerializer, EntryCommentCreateSerializer, EntryCreateSerializer, EntryReviewSerializer, EntrySerializer, EntryVersionCreateSerializer, IssueCreateSerializer, IssueSerializer, UserSerializer
+from .serializers import AnnouncementUpdateSerializer, EntryCloseSerializer, EntryCommentCreateSerializer, EntryCreateSerializer, EntryReopenSerializer, EntryReviewSerializer, EntrySerializer, EntryVersionCreateSerializer, IssueCreateSerializer, IssueSerializer, UserSerializer
 from .services import audit, get_config, set_config
 
 
@@ -143,7 +143,7 @@ def entries(request, issue_number):
 @api_view(["GET"])
 def entry_review_detail(request, entry_uuid):
     try:
-        entry = Entry.objects.select_related("issue", "issue__leader", "issue__responsible_editor", "submitter", "review_completed_by", "merged_by").prefetch_related("issue__editors", "versions__uploader", "comments__author").get(uuid=entry_uuid)
+        entry = Entry.objects.select_related("issue", "issue__leader", "issue__responsible_editor", "submitter", "review_completed_by", "merged_by").prefetch_related("issue__editors", "versions__uploader", "comments__author", "state_events__actor").get(uuid=entry_uuid)
     except Entry.DoesNotExist:
         return Response({"detail": "投稿不存在。"}, status=status.HTTP_404_NOT_FOUND)
     return Response(EntryReviewSerializer(entry, context={"request": request}).data)
@@ -191,7 +191,7 @@ def add_entry_comment(request, entry_uuid):
         entry = Entry.objects.select_related("issue").get(uuid=entry_uuid)
     except Entry.DoesNotExist:
         return Response({"detail": "投稿不存在。"}, status=status.HTTP_404_NOT_FOUND)
-    if not can_comment_on_entry(request.user, entry) or entry.status == Entry.Status.SELECTED:
+    if not can_comment_on_entry(request.user, entry) or entry.status in (Entry.Status.SELECTED, Entry.Status.INVALID):
         return Response({"detail": "没有在此稿件留言的权限。"}, status=status.HTTP_403_FORBIDDEN)
     serializer = EntryCommentCreateSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
@@ -215,7 +215,50 @@ def complete_entry_review(request, entry_uuid):
     entry.review_completed_by = request.user
     entry.review_completed_at = django_timezone.now()
     entry.save(update_fields=["status", "reviewer_name", "review_completed_by", "review_completed_at", "updated_at"])
+    EntryStateEvent.objects.create(entry=entry, action=EntryStateEvent.Action.REVIEW_COMPLETED, actor=request.user, actor_name=request.user.username, from_status=Entry.Status.CREATED, to_status=Entry.Status.REVIEWED)
     audit("entries.review.complete", request.user.username, f"完成投稿 {entry.uuid} 的审核")
+    return Response(EntryReviewSerializer(entry, context={"request": request}).data)
+
+
+def _close_entry(entry, user, disposition, note=""):
+    from_status = entry.status
+    to_status = Entry.Status.SELECTED if disposition == "merged" else Entry.Status.INVALID
+    entry.closed_from_status = from_status
+    entry.status = to_status
+    update_fields = ["closed_from_status", "status", "updated_at"]
+    if disposition == "merged":
+        entry.merged_by = user
+        entry.merged_at = django_timezone.now()
+        update_fields.extend(("merged_by", "merged_at"))
+    entry.save(update_fields=update_fields)
+    EntryStateEvent.objects.create(
+        entry=entry,
+        action=EntryStateEvent.Action.CLOSED_MERGED if disposition == "merged" else EntryStateEvent.Action.CLOSED_INVALID,
+        actor=user,
+        actor_name=user.username,
+        from_status=from_status,
+        to_status=to_status,
+        note=note,
+    )
+
+
+@api_view(["POST"])
+def close_entry(request, entry_uuid):
+    try:
+        entry = Entry.objects.select_related("issue").get(uuid=entry_uuid)
+    except Entry.DoesNotExist:
+        return Response({"detail": "投稿不存在。"}, status=status.HTTP_404_NOT_FOUND)
+    if not is_entry_chief(request.user, entry):
+        return Response({"detail": "只有主编级用户可以关闭稿件。"}, status=status.HTTP_403_FORBIDDEN)
+    if entry.status not in (Entry.Status.CREATED, Entry.Status.REVIEWED) or entry.issue.published:
+        return Response({"detail": "稿件当前不能关闭。"}, status=status.HTTP_400_BAD_REQUEST)
+    serializer = EntryCloseSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    disposition = serializer.validated_data["disposition"]
+    if disposition == "merged" and entry.status != Entry.Status.REVIEWED:
+        return Response({"detail": "只有已完成审核的稿件可以 Close as merged。"}, status=status.HTTP_400_BAD_REQUEST)
+    _close_entry(entry, request.user, disposition, serializer.validated_data.get("note", ""))
+    audit(f"entries.close.{disposition}", request.user.username, f"关闭投稿 {entry.uuid}")
     return Response(EntryReviewSerializer(entry, context={"request": request}).data)
 
 
@@ -226,14 +269,38 @@ def merge_entry(request, entry_uuid):
     except Entry.DoesNotExist:
         return Response({"detail": "投稿不存在。"}, status=status.HTTP_404_NOT_FOUND)
     if not is_entry_chief(request.user, entry):
-        return Response({"detail": "没有合并稿件的权限。"}, status=status.HTTP_403_FORBIDDEN)
+        return Response({"detail": "只有主编级用户可以合并稿件。"}, status=status.HTTP_403_FORBIDDEN)
     if entry.status != Entry.Status.REVIEWED or entry.issue.published:
-        return Response({"detail": "只有已完成审核的稿件可以合并。"}, status=status.HTTP_400_BAD_REQUEST)
-    entry.status = Entry.Status.SELECTED
-    entry.merged_by = request.user
-    entry.merged_at = django_timezone.now()
-    entry.save(update_fields=["status", "merged_by", "merged_at", "updated_at"])
-    audit("entries.merge", request.user.username, f"合并投稿 {entry.uuid}")
+        return Response({"detail": "只有已完成审核的稿件可以 Close as merged。"}, status=status.HTTP_400_BAD_REQUEST)
+    _close_entry(entry, request.user, "merged")
+    audit("entries.close.merged", request.user.username, f"关闭并合并投稿 {entry.uuid}")
+    return Response(EntryReviewSerializer(entry, context={"request": request}).data)
+
+
+@api_view(["POST"])
+def reopen_entry(request, entry_uuid):
+    try:
+        entry = Entry.objects.select_related("issue").get(uuid=entry_uuid)
+    except Entry.DoesNotExist:
+        return Response({"detail": "投稿不存在。"}, status=status.HTTP_404_NOT_FOUND)
+    if not is_entry_chief(request.user, entry):
+        return Response({"detail": "只有主编级用户可以重新打开稿件。"}, status=status.HTTP_403_FORBIDDEN)
+    if entry.status not in (Entry.Status.SELECTED, Entry.Status.INVALID) or entry.issue.published:
+        return Response({"detail": "稿件当前不是可重新打开的关闭状态。"}, status=status.HTTP_400_BAD_REQUEST)
+    serializer = EntryReopenSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    from_status = entry.status
+    restored_status = entry.closed_from_status if entry.closed_from_status in (Entry.Status.CREATED, Entry.Status.REVIEWED) else (Entry.Status.REVIEWED if from_status == Entry.Status.SELECTED else Entry.Status.CREATED)
+    entry.status = restored_status
+    entry.closed_from_status = ""
+    update_fields = ["status", "closed_from_status", "updated_at"]
+    if from_status == Entry.Status.SELECTED:
+        entry.merged_by = None
+        entry.merged_at = None
+        update_fields.extend(("merged_by", "merged_at"))
+    entry.save(update_fields=update_fields)
+    EntryStateEvent.objects.create(entry=entry, action=EntryStateEvent.Action.REOPENED, actor=request.user, actor_name=request.user.username, from_status=from_status, to_status=restored_status, note=serializer.validated_data.get("note", ""))
+    audit("entries.reopen", request.user.username, f"重新打开投稿 {entry.uuid}")
     return Response(EntryReviewSerializer(entry, context={"request": request}).data)
 
 

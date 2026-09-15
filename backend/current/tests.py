@@ -12,7 +12,7 @@ from django.test import Client
 from django.test import TestCase
 from django.utils import timezone
 
-from .models import Entry, EntryFileVersion, Issue, User
+from .models import Entry, EntryFileVersion, EntryStateEvent, Issue, User
 
 
 class LegacyImportTests(TestCase):
@@ -177,6 +177,24 @@ class LegacyImportTests(TestCase):
             self.assertEqual(created.status_code, 201)
             entry_uuid = created.json()["uuid"]
 
+            self.client.force_login(chief)
+            chief_open_detail = self.client.get(f"/api/v1/entries/{entry_uuid}/review")
+            self.assertTrue(chief_open_detail.json()["capabilities"]["can_close"])
+            closed_invalid = self.client.post(
+                f"/api/v1/entries/{entry_uuid}/close",
+                {"disposition": "invalid", "note": "稿件方向不符合本期主题"},
+                content_type="application/json",
+            )
+            self.assertEqual(closed_invalid.status_code, 200)
+            self.assertEqual(closed_invalid.json()["status"], Entry.Status.INVALID)
+            reopened_invalid = self.client.post(
+                f"/api/v1/entries/{entry_uuid}/reopen",
+                {"note": "重新评估后恢复审核"},
+                content_type="application/json",
+            )
+            self.assertEqual(reopened_invalid.status_code, 200)
+            self.assertEqual(reopened_invalid.json()["status"], Entry.Status.CREATED)
+
             self.client.force_login(outsider)
             denied = self.client.post(f"/api/v1/entries/{entry_uuid}/comments", {"body": "不应被接受"}, content_type="application/json")
             self.assertEqual(denied.status_code, 403)
@@ -211,7 +229,25 @@ class LegacyImportTests(TestCase):
             self.assertEqual(merged.json()["status"], Entry.Status.SELECTED)
             self.assertEqual(merged.json()["merged_by"]["username"], "chief")
             self.assertEqual(len(merged.json()["comments"]), 2)
+            reopened_merged = self.client.post(
+                f"/api/v1/entries/{entry_uuid}/reopen",
+                {"note": "需要补充终审说明"},
+                content_type="application/json",
+            )
+            self.assertEqual(reopened_merged.status_code, 200)
+            self.assertEqual(reopened_merged.json()["status"], Entry.Status.REVIEWED)
+            self.assertIsNone(reopened_merged.json()["merged_by"])
 
             entry = Entry.objects.get(pk=entry_uuid)
             self.assertEqual(entry.versions.count(), 2)
             self.assertEqual(entry.filename, "draft-v2.docx")
+            self.assertEqual(
+                list(entry.state_events.values_list("action", flat=True)),
+                [
+                    EntryStateEvent.Action.CLOSED_INVALID,
+                    EntryStateEvent.Action.REOPENED,
+                    EntryStateEvent.Action.REVIEW_COMPLETED,
+                    EntryStateEvent.Action.CLOSED_MERGED,
+                    EntryStateEvent.Action.REOPENED,
+                ],
+            )

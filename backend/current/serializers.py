@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from .models import Entry, EntryComment, EntryFileVersion, Issue, User
+from .models import Entry, EntryComment, EntryFileVersion, EntryStateEvent, Issue, User
 from .permissions import can_comment_on_entry, is_entry_chief, is_entry_reviewer
 
 
@@ -28,6 +28,14 @@ class EntryCommentSerializer(serializers.ModelSerializer):
     class Meta:
         model = EntryComment
         fields = ("id", "author", "author_name", "body", "created_at")
+
+
+class EntryStateEventSerializer(serializers.ModelSerializer):
+    actor = UserSerializer(read_only=True, allow_null=True)
+
+    class Meta:
+        model = EntryStateEvent
+        fields = ("id", "action", "actor", "actor_name", "from_status", "to_status", "note", "created_at")
 
 
 class IssueSerializer(serializers.ModelSerializer):
@@ -61,18 +69,21 @@ class EntrySerializer(serializers.ModelSerializer):
 class EntryReviewSerializer(EntrySerializer):
     versions = EntryFileVersionSerializer(many=True, read_only=True)
     comments = EntryCommentSerializer(many=True, read_only=True)
+    state_events = EntryStateEventSerializer(many=True, read_only=True)
     capabilities = serializers.SerializerMethodField()
 
     class Meta(EntrySerializer.Meta):
-        fields = EntrySerializer.Meta.fields + ("versions", "comments", "capabilities")
+        fields = EntrySerializer.Meta.fields + ("versions", "comments", "state_events", "capabilities")
 
     def get_capabilities(self, obj):
         user = self.context["request"].user
         return {
-            "can_comment": can_comment_on_entry(user, obj) and obj.status != Entry.Status.SELECTED,
+            "can_comment": can_comment_on_entry(user, obj) and obj.status not in (Entry.Status.SELECTED, Entry.Status.INVALID),
             "can_upload_version": is_entry_reviewer(user, obj) and obj.status == Entry.Status.CREATED and not obj.issue.published,
             "can_complete_review": is_entry_reviewer(user, obj) and obj.status == Entry.Status.CREATED and obj.versions.exists(),
             "can_merge": is_entry_chief(user, obj) and obj.status == Entry.Status.REVIEWED and not obj.issue.published,
+            "can_close": is_entry_chief(user, obj) and obj.status in (Entry.Status.CREATED, Entry.Status.REVIEWED) and not obj.issue.published,
+            "can_reopen": is_entry_chief(user, obj) and obj.status in (Entry.Status.SELECTED, Entry.Status.INVALID) and not obj.issue.published,
             "can_delete": user.has_perm("current.remove_entry"),
         }
 
@@ -102,6 +113,15 @@ class EntryVersionCreateSerializer(serializers.Serializer):
 
 class EntryCommentCreateSerializer(serializers.Serializer):
     body = serializers.CharField(max_length=4000, trim_whitespace=True)
+
+
+class EntryCloseSerializer(serializers.Serializer):
+    disposition = serializers.ChoiceField(choices=("invalid", "merged"))
+    note = serializers.CharField(max_length=500, required=False, allow_blank=True, trim_whitespace=True)
+
+
+class EntryReopenSerializer(serializers.Serializer):
+    note = serializers.CharField(max_length=500, required=False, allow_blank=True, trim_whitespace=True)
 
 
 class AnnouncementUpdateSerializer(serializers.Serializer):
