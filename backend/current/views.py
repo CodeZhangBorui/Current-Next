@@ -12,7 +12,7 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
 from .models import Entry, EntryComment, EntryFileVersion, EntryStateEvent, Issue, User
-from .permissions import can_comment_on_entry, is_entry_chief, is_entry_reviewer
+from .permissions import can_comment_on_entry, can_manage_issue_pdf, is_entry_chief, is_entry_reviewer
 from .serializers import AnnouncementUpdateSerializer, EntryCloseSerializer, EntryCommentCreateSerializer, EntryCreateSerializer, EntryReopenSerializer, EntryReviewSerializer, EntrySerializer, EntryVersionCreateSerializer, IssueCreateSerializer, IssueSerializer, UserSerializer
 from .services import audit, get_config, set_config
 
@@ -60,7 +60,7 @@ def change_password(request):
 @api_view(["GET", "POST"])
 def issues(request):
     if request.method == "GET":
-        return Response(IssueSerializer(Issue.objects.all(), many=True).data)
+        return Response(IssueSerializer(Issue.objects.all(), many=True, context={"request": request}).data)
     if not request.user.has_perm("current.create_issue"):
         return Response({"detail": "没有创建期刊的权限。"}, status=status.HTTP_403_FORBIDDEN)
     serializer = IssueCreateSerializer(data=request.data)
@@ -70,7 +70,7 @@ def issues(request):
     issue = Issue.objects.create(issue_number=data["id"], deadline=data["deadline"], subject2=subjects[0], subject3=subjects[1], subject4=subjects[2], leader=data.get("leader"), responsible_editor=data.get("responsible_editor"))
     issue.editors.set(data.get("editors", []))
     audit("issues.create", request.user.username, f"创建第 {issue.issue_number} 期")
-    return Response(IssueSerializer(issue).data, status=status.HTTP_201_CREATED)
+    return Response(IssueSerializer(issue, context={"request": request}).data, status=status.HTTP_201_CREATED)
 
 
 @api_view(["GET"])
@@ -87,26 +87,55 @@ def issue_detail(request, issue_number):
     except Issue.DoesNotExist:
         return Response({"detail": "期刊不存在。"}, status=status.HTTP_404_NOT_FOUND)
     entries = EntrySerializer(issue.entries.all(), many=True).data
-    return Response({"issue": IssueSerializer(issue).data, "entries": entries})
+    return Response({"issue": IssueSerializer(issue, context={"request": request}).data, "entries": entries})
+
+
+def _issue_pdf_response(issue, request):
+    return Response(IssueSerializer(issue, context={"request": request}).data)
+
+
+@api_view(["POST"])
+@parser_classes([MultiPartParser, FormParser])
+def upload_issue_pdf(request, issue_number):
+    try:
+        issue = Issue.objects.get(issue_number=issue_number)
+    except Issue.DoesNotExist:
+        return Response({"detail": "期刊不存在。"}, status=status.HTTP_404_NOT_FOUND)
+    if not can_manage_issue_pdf(request.user, issue):
+        return Response({"detail": "只有主编级用户可以管理期刊 PDF。"}, status=status.HTTP_403_FORBIDDEN)
+    pdf = request.FILES.get("pdf")
+    if not pdf:
+        return Response({"detail": "请选择 PDF 文件。"}, status=status.HTTP_400_BAD_REQUEST)
+    if not pdf.name.lower().endswith(".pdf"):
+        return Response({"detail": "只支持 PDF 文件。"}, status=status.HTTP_400_BAD_REQUEST)
+    issue.pdf = pdf
+    issue.save(update_fields=["pdf"])
+    audit("issues.pdf.upload", request.user.username, f"上传第 {issue.issue_number} 期 PDF")
+    return _issue_pdf_response(issue, request)
 
 
 @api_view(["POST"])
 @parser_classes([MultiPartParser, FormParser])
 def publish_issue(request, issue_number):
-    if not request.user.has_perm("current.publish_issue"):
-        return Response({"detail": "没有发布期刊的权限。"}, status=status.HTTP_403_FORBIDDEN)
     try:
         issue = Issue.objects.get(issue_number=issue_number)
     except Issue.DoesNotExist:
         return Response({"detail": "期刊不存在。"}, status=status.HTTP_404_NOT_FOUND)
+    if not can_manage_issue_pdf(request.user, issue):
+        return Response({"detail": "只有主编级用户可以发布期刊。"}, status=status.HTTP_403_FORBIDDEN)
     if issue.published:
         return Response({"detail": "期刊已经发布。"}, status=status.HTTP_400_BAD_REQUEST)
     if request.FILES.get("pdf"):
-        issue.pdf = request.FILES["pdf"]
+        pdf = request.FILES["pdf"]
+        if not pdf.name.lower().endswith(".pdf"):
+            return Response({"detail": "只支持 PDF 文件。"}, status=status.HTTP_400_BAD_REQUEST)
+        issue.pdf = pdf
+    if not issue.pdf:
+        return Response({"detail": "请先上传 PDF 文件再发布。"}, status=status.HTTP_400_BAD_REQUEST)
     issue.published = True
     issue.save(update_fields=["pdf", "published"])
     audit("issues.publish", request.user.username, f"发布第 {issue.issue_number} 期")
-    return Response(IssueSerializer(issue).data)
+    return _issue_pdf_response(issue, request)
 
 
 @api_view(["GET"])

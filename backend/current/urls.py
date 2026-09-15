@@ -11,6 +11,7 @@ urlpatterns = [
     path("issues", views.issues),
     path("users/choices", views.user_choices),
     path("issues/<int:issue_number>", views.issue_detail),
+    path("issues/<int:issue_number>/pdf/upload", views.upload_issue_pdf),
     path("issues/<int:issue_number>/publish", views.publish_issue),
     path("issues/<int:issue_number>/pdf", views.issue_pdf),
     path("issues/<int:issue_number>/entries", views.entries),

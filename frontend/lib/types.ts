@@ -1,6 +1,6 @@
 export type User = { id: number; username: string; grade: number; classnum: number; is_active: boolean; is_staff: boolean };
 export type UserChoice = { id: number; username: string; grade: number; classnum: number; is_active: boolean; is_staff: boolean };
-export type Issue = { id: number; deadline: string; subject: string[]; leader: UserChoice | null; editors: UserChoice[]; responsible_editor: UserChoice | null; published: boolean };
+export type Issue = { id: number; deadline: string; subject: string[]; leader: UserChoice | null; editors: UserChoice[]; responsible_editor: UserChoice | null; published: boolean; pdf_available: boolean; can_manage_pdf: boolean };
 export type EntryStatus = "pending" | "created" | "reviewed" | "selected" | "invalid";
 export type Entry = { uuid: string; issue_id: number; filename: string; page: number; title: string; origin: string; wordcount: number; description: string; submitter: UserChoice | null; selector_name: string; reviewer_name: string; status: EntryStatus; closed_from_status: string; review_completed_by: UserChoice | null; review_completed_at: string | null; merged_by: UserChoice | null; merged_at: string | null; version_count: number; comment_count: number; created_at: string; updated_at: string };
 export type EntryFileVersion = { id: number; version: number; filename: string; uploader: UserChoice | null; uploader_name: string; note: string; source: "submission" | "review" | "legacy"; created_at: string; download_url: string };

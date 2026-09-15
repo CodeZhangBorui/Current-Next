@@ -87,6 +87,35 @@ class LegacyImportTests(TestCase):
         self.assertEqual(data["editors"][0]["username"], "editor")
         self.assertEqual(data["responsible_editor"]["username"], "responsible")
 
+    def test_issue_pdf_can_be_uploaded_and_published_by_issue_chief(self):
+        chief = User.objects.create_user(username="chief", password="secret")
+        outsider = User.objects.create_user(username="outsider", password="secret")
+        issue = Issue.objects.create(issue_number=13, deadline=timezone.now(), leader=chief)
+
+        self.client.force_login(outsider)
+        denied = self.client.post(
+            f"/api/v1/issues/{issue.issue_number}/pdf/upload",
+            {"pdf": SimpleUploadedFile("issue.pdf", b"pdf-data", content_type="application/pdf")},
+        )
+        self.assertEqual(denied.status_code, 403)
+
+        self.client.force_login(chief)
+        without_pdf = self.client.post(f"/api/v1/issues/{issue.issue_number}/publish", {})
+        self.assertEqual(without_pdf.status_code, 400)
+
+        uploaded = self.client.post(
+            f"/api/v1/issues/{issue.issue_number}/pdf/upload",
+            {"pdf": SimpleUploadedFile("issue.pdf", b"pdf-data", content_type="application/pdf")},
+        )
+        self.assertEqual(uploaded.status_code, 200)
+        self.assertTrue(uploaded.json()["pdf_available"])
+        self.assertFalse(uploaded.json()["published"])
+
+        published = self.client.post(f"/api/v1/issues/{issue.issue_number}/publish", {})
+        self.assertEqual(published.status_code, 200)
+        self.assertTrue(published.json()["published"])
+        self.assertTrue(Issue.objects.get(pk=issue.issue_number).pdf)
+
     def test_local_next_origin_is_allowed_for_csrf_protected_post(self):
         creator = User.objects.create_user(username="csrf-creator", password="secret")
         creator.user_permissions.add(Permission.objects.get(codename="create_issue"))

@@ -27,6 +27,17 @@ def is_entry_chief(user, entry):
     )
 
 
+def can_manage_issue_pdf(user, issue):
+    if not user or not user.is_authenticated:
+        return False
+    return bool(
+        user.is_staff
+        or user.has_perm("current.publish_issue")
+        or issue.leader_id == user.pk
+        or issue.responsible_editor_id == user.pk
+    )
+
+
 def can_comment_on_entry(user, entry):
     return bool(
         user

@@ -1,7 +1,7 @@
 from rest_framework import serializers
 
 from .models import Entry, EntryComment, EntryFileVersion, EntryStateEvent, Issue, User
-from .permissions import can_comment_on_entry, is_entry_chief, is_entry_reviewer
+from .permissions import can_comment_on_entry, can_manage_issue_pdf, is_entry_chief, is_entry_reviewer
 
 
 class UserSerializer(serializers.ModelSerializer):
@@ -44,13 +44,22 @@ class IssueSerializer(serializers.ModelSerializer):
     leader = UserSerializer(read_only=True, allow_null=True)
     editors = UserSerializer(many=True, read_only=True)
     responsible_editor = UserSerializer(read_only=True, allow_null=True)
+    pdf_available = serializers.SerializerMethodField()
+    can_manage_pdf = serializers.SerializerMethodField()
 
     class Meta:
         model = Issue
-        fields = ("id", "deadline", "subject", "leader", "editors", "responsible_editor", "published")
+        fields = ("id", "deadline", "subject", "leader", "editors", "responsible_editor", "published", "pdf_available", "can_manage_pdf")
 
     def get_subject(self, obj):
         return [obj.subject2, obj.subject3, obj.subject4]
+
+    def get_pdf_available(self, obj):
+        return bool(obj.pdf)
+
+    def get_can_manage_pdf(self, obj):
+        request = self.context.get("request")
+        return bool(request and can_manage_issue_pdf(request.user, obj))
 
 
 class EntrySerializer(serializers.ModelSerializer):
