@@ -9,6 +9,7 @@ urlpatterns = [
     path("auth/logout", views.logout_view),
     path("auth/password", views.change_password),
     path("issues", views.issues),
+    path("statistics", views.statistics),
     path("users/choices", views.user_choices),
     path("issues/<int:issue_number>", views.issue_detail),
     path("issues/<int:issue_number>/pdf/upload", views.upload_issue_pdf),

@@ -2,6 +2,7 @@ from pathlib import Path
 
 from django.contrib.auth import authenticate, login, logout
 from django.db import transaction
+from django.db.models import Count, Q, Sum
 from django.http import FileResponse, Http404
 from django.utils import timezone as django_timezone
 from django.views.decorators.csrf import ensure_csrf_cookie
@@ -15,6 +16,123 @@ from .models import Entry, EntryComment, EntryFileVersion, EntryStateEvent, Issu
 from .permissions import can_comment_on_entry, can_manage_issue_pdf, is_entry_chief, is_entry_reviewer
 from .serializers import AnnouncementUpdateSerializer, EntryCloseSerializer, EntryCommentCreateSerializer, EntryCreateSerializer, EntryReopenSerializer, EntryReviewSerializer, EntrySerializer, EntryVersionCreateSerializer, IssueCreateSerializer, IssueSerializer, UserSerializer
 from .services import audit, get_config, set_config
+
+
+def _average_hours(rows, start_key, end_key):
+    durations = [
+        (row[end_key] - row[start_key]).total_seconds() / 3600
+        for row in rows
+        if row[start_key] and row[end_key] and row[end_key] >= row[start_key]
+    ]
+    return round(sum(durations) / len(durations), 1) if durations else None
+
+
+@api_view(["GET"])
+def statistics(request):
+    ranking_period = request.query_params.get("ranking_period", "all")
+    if ranking_period not in ("latest", "recent3", "all"):
+        ranking_period = "all"
+    ranking_issue_limit = {"latest": 1, "recent3": 3}.get(ranking_period)
+    ranking_issue_ids = list(Issue.objects.order_by("-issue_number").values_list("issue_number", flat=True)[:ranking_issue_limit]) if ranking_issue_limit else None
+    ranking_entries = Entry.objects.filter(issue_id__in=ranking_issue_ids) if ranking_issue_ids is not None else Entry.objects.all()
+
+    status_counts = {value: 0 for value, _ in Entry.Status.choices}
+    status_counts.update(dict(Entry.objects.values_list("status").annotate(total=Count("uuid"))))
+
+    totals = Entry.objects.aggregate(entries=Count("uuid"), words=Sum("wordcount"))
+    issue_rows = list(
+        Issue.objects.annotate(
+            total=Count("entries"),
+            pending=Count("entries", filter=Q(entries__status=Entry.Status.PENDING)),
+            waiting=Count("entries", filter=Q(entries__status=Entry.Status.CREATED)),
+            reviewed=Count("entries", filter=Q(entries__status=Entry.Status.REVIEWED)),
+            merged=Count("entries", filter=Q(entries__status=Entry.Status.SELECTED)),
+            invalid=Count("entries", filter=Q(entries__status=Entry.Status.INVALID)),
+            words=Sum("entries__wordcount"),
+        ).order_by("issue_number")
+    )
+    timing_rows = list(Entry.objects.values("created_at", "review_completed_at", "merged_at"))
+
+    contributor_counts = {}
+    for row in ranking_entries.values("submitter__username", "selector_name", "wordcount", "status"):
+        name = row["submitter__username"] or row["selector_name"]
+        if not name:
+            continue
+        item = contributor_counts.setdefault(name, {"username": name, "entries": 0, "words": 0, "merged": 0})
+        item["entries"] += 1
+        item["words"] += row["wordcount"] or 0
+        item["merged"] += int(row["status"] == Entry.Status.SELECTED)
+
+    collaborator_counts = {}
+
+    def collaborator(name):
+        if not name:
+            return None
+        return collaborator_counts.setdefault(name, {"username": name, "reviews": 0, "merges": 0, "comments": 0, "versions": 0})
+
+    for row in EntryStateEvent.objects.filter(entry__in=ranking_entries, action__in=(EntryStateEvent.Action.REVIEW_COMPLETED, EntryStateEvent.Action.CLOSED_MERGED)).values("actor__username", "actor_name", "action"):
+        item = collaborator(row["actor__username"] or row["actor_name"])
+        if item:
+            item["reviews" if row["action"] == EntryStateEvent.Action.REVIEW_COMPLETED else "merges"] += 1
+    for row in EntryComment.objects.filter(entry__in=ranking_entries).values("author__username", "author_name").annotate(total=Count("id")):
+        item = collaborator(row["author__username"] or row["author_name"])
+        if item:
+            item["comments"] += row["total"]
+    for row in EntryFileVersion.objects.filter(entry__in=ranking_entries, source=EntryFileVersion.Source.REVIEW).values("uploader__username", "uploader_name").annotate(total=Count("id")):
+        item = collaborator(row["uploader__username"] or row["uploader_name"])
+        if item:
+            item["versions"] += row["total"]
+
+    user = request.user
+    own_entries = Entry.objects.filter(Q(submitter=user) | Q(submitter__isnull=True, selector_name=user.username)).distinct()
+    if user.is_staff or user.has_perm("current.review_entry"):
+        review_issues = Issue.objects.all()
+    else:
+        review_issues = Issue.objects.filter(editors=user)
+    if user.is_staff or user.has_perm("current.select_entry"):
+        chief_issues = Issue.objects.all()
+    else:
+        chief_issues = Issue.objects.filter(Q(leader=user) | Q(responsible_editor=user))
+
+    return Response({
+        "generated_at": django_timezone.now().isoformat(),
+        "ranking_period": ranking_period,
+        "summary": {
+            "issues": Issue.objects.count(),
+            "published_issues": Issue.objects.filter(published=True).count(),
+            "entries": totals["entries"] or 0,
+            "words": totals["words"] or 0,
+            "versions": EntryFileVersion.objects.count(),
+            "comments": EntryComment.objects.count(),
+        },
+        "status_counts": status_counts,
+        "workflow": {
+            "average_review_hours": _average_hours(timing_rows, "created_at", "review_completed_at"),
+            "average_decision_hours": _average_hours(timing_rows, "review_completed_at", "merged_at"),
+            "returned_reviews": EntryStateEvent.objects.filter(action=EntryStateEvent.Action.REVIEW_RETURNED).count(),
+            "reopened_entries": EntryStateEvent.objects.filter(action=EntryStateEvent.Action.REOPENED).count(),
+        },
+        "issues": [{
+            "id": issue.issue_number,
+            "published": issue.published,
+            "total": issue.total,
+            "pending": issue.pending,
+            "waiting": issue.waiting,
+            "reviewed": issue.reviewed,
+            "merged": issue.merged,
+            "invalid": issue.invalid,
+            "words": issue.words or 0,
+        } for issue in issue_rows],
+        "pages": list(Entry.objects.values("page").annotate(total=Count("uuid"), merged=Count("uuid", filter=Q(status=Entry.Status.SELECTED)), words=Sum("wordcount")).order_by("page")),
+        "contributors": sorted(contributor_counts.values(), key=lambda item: (-item["entries"], item["username"]))[:8],
+        "collaborators": sorted(collaborator_counts.values(), key=lambda item: (-(item["reviews"] + item["merges"] + item["comments"] + item["versions"]), item["username"]))[:8],
+        "personal": {
+            "submitted": own_entries.count(),
+            "merged": own_entries.filter(status=Entry.Status.SELECTED).count(),
+            "reviewing": Entry.objects.filter(issue__in=review_issues, issue__published=False, status=Entry.Status.CREATED).distinct().count(),
+            "awaiting_decision": Entry.objects.filter(issue__in=chief_issues, issue__published=False, status=Entry.Status.REVIEWED).distinct().count(),
+        },
+    })
 
 
 @api_view(["GET"])

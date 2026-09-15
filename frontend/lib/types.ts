@@ -9,3 +9,15 @@ export type EntryStateEvent = { id: number; action: "review_completed" | "review
 export type EntryCapabilities = { can_comment: boolean; can_upload_version: boolean; can_complete_review: boolean; can_return_to_review: boolean; can_merge: boolean; can_close: boolean; can_reopen: boolean; can_delete: boolean };
 export type EntryReview = Entry & { versions: EntryFileVersion[]; comments: EntryComment[]; state_events: EntryStateEvent[]; capabilities: EntryCapabilities };
 export type AnnouncementManager = { draft: string; published: string; published_at: string; published_by: string };
+export type Statistics = {
+  generated_at: string;
+  ranking_period: "latest" | "recent3" | "all";
+  summary: { issues: number; published_issues: number; entries: number; words: number; versions: number; comments: number };
+  status_counts: Record<EntryStatus, number>;
+  workflow: { average_review_hours: number | null; average_decision_hours: number | null; returned_reviews: number; reopened_entries: number };
+  issues: Array<{ id: number; published: boolean; total: number; pending: number; waiting: number; reviewed: number; merged: number; invalid: number; words: number }>;
+  pages: Array<{ page: number; total: number; merged: number; words: number }>;
+  contributors: Array<{ username: string; entries: number; words: number; merged: number }>;
+  collaborators: Array<{ username: string; reviews: number; merges: number; comments: number; versions: number }>;
+  personal: { submitted: number; merged: number; reviewing: number; awaiting_decision: number };
+};

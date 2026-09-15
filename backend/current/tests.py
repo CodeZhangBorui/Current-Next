@@ -16,6 +16,42 @@ from .models import Entry, EntryFileVersion, EntryStateEvent, Issue, User
 
 
 class LegacyImportTests(TestCase):
+    def test_statistics_aggregates_workflow_and_personal_metrics(self):
+        contributor = User.objects.create_user(username="statistics-contributor", password="secret")
+        reviewer = User.objects.create_user(username="statistics-reviewer", password="secret")
+        issue = Issue.objects.create(issue_number=101, deadline=timezone.now())
+        issue.editors.add(reviewer)
+        published_issue = Issue.objects.create(issue_number=102, deadline=timezone.now(), published=True, responsible_editor=reviewer)
+        published_issue.editors.add(reviewer)
+        merged = Entry.objects.create(issue=issue, page=1, title="已合并", origin="校内", wordcount=300, submitter=contributor, status=Entry.Status.SELECTED)
+        waiting = Entry.objects.create(issue=issue, page=2, title="待审核", origin="校内", wordcount=200, submitter=contributor, status=Entry.Status.CREATED)
+        Entry.objects.create(issue=published_issue, page=1, title="已出版但待审核", origin="校内", wordcount=100, status=Entry.Status.CREATED)
+        Entry.objects.create(issue=published_issue, page=2, title="已出版但待决策", origin="校内", wordcount=100, status=Entry.Status.REVIEWED)
+        EntryFileVersion.objects.create(entry=waiting, version=1, filename="review.docx", file="entries/review.docx", uploader=reviewer, uploader_name=reviewer.username, source=EntryFileVersion.Source.REVIEW)
+        EntryStateEvent.objects.create(entry=merged, action=EntryStateEvent.Action.CLOSED_MERGED, actor=reviewer, actor_name=reviewer.username, from_status=Entry.Status.REVIEWED, to_status=Entry.Status.SELECTED)
+
+        self.client.force_login(reviewer)
+        response = self.client.get("/api/v1/statistics")
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["summary"]["entries"], 4)
+        self.assertEqual(data["summary"]["words"], 700)
+        self.assertEqual(data["status_counts"]["created"], 2)
+        self.assertEqual(data["status_counts"]["selected"], 1)
+        self.assertEqual(data["issues"][0]["merged"], 1)
+        self.assertEqual(data["contributors"][0]["username"], contributor.username)
+        self.assertEqual(data["collaborators"][0]["merges"], 1)
+        self.assertNotIn("未记录", [item["username"] for item in data["contributors"]])
+        self.assertNotIn("未记录", [item["username"] for item in data["collaborators"]])
+        self.assertEqual(data["personal"]["reviewing"], 1)
+        self.assertEqual(data["personal"]["awaiting_decision"], 0)
+
+        latest = self.client.get("/api/v1/statistics?ranking_period=latest").json()
+        self.assertEqual(latest["ranking_period"], "latest")
+        self.assertEqual(latest["contributors"], [])
+        self.assertEqual(latest["collaborators"], [])
+
     def test_legacy_import_preserves_users_business_rows_and_files(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
