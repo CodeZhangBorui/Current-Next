@@ -225,6 +225,16 @@ class LegacyImportTests(TestCase):
             self.assertEqual(reopened_invalid.json()["status"], Entry.Status.CREATED)
 
             self.client.force_login(outsider)
+            outsider_detail = self.client.get(f"/api/v1/entries/{entry_uuid}/review")
+            self.assertFalse(outsider_detail.json()["capabilities"]["can_close"])
+            self.assertFalse(outsider_detail.json()["capabilities"]["can_reopen"])
+            outsider_close = self.client.post(
+                f"/api/v1/entries/{entry_uuid}/close",
+                {"disposition": "invalid"},
+                content_type="application/json",
+            )
+            self.assertEqual(outsider_close.status_code, 403)
+
             denied = self.client.post(f"/api/v1/entries/{entry_uuid}/comments", {"body": "不应被接受"}, content_type="application/json")
             self.assertEqual(denied.status_code, 403)
 
