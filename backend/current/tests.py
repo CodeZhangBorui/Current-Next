@@ -36,6 +36,7 @@ class LegacyImportTests(TestCase):
                 db.execute("INSERT INTO entries VALUES ('entry-1', 1, 'article.docx', 2, 'Title', 'School', 12, 'Description', 'student', '', 'created')")
                 db.commit()
 
+            User.objects.create(pk=7, username="existing-user")
             call_command("migrate_legacy_current", orion_db=orion_db, current_db=current_db, uploads_root=uploads)
 
             user = User.objects.get(username="student")

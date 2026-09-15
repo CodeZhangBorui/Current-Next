@@ -126,7 +126,12 @@ class Command(BaseCommand):
         columns = [column[1] for column in connection.execute("PRAGMA table_info(users)").fetchall()]
         for row in connection.execute("SELECT * FROM users").fetchall():
             values = dict(zip(columns, row))
-            user, created = User.objects.get_or_create(username=values["name"], defaults={"id": values["id"]})
+            user = User.objects.filter(username=values["name"]).first()
+            created = user is None
+            if created:
+                source_id = values.get("id")
+                create_values = {"id": source_id} if source_id and not User.objects.filter(pk=source_id).exists() else {}
+                user = User.objects.create(username=values["name"], **create_values)
             user.grade = int(values.get("grade") or 0)
             user.classnum = int(values.get("classnum") or 0)
             user.is_active = str(values.get("active", "1")).lower() not in ("0", "false", "no")
