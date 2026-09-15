@@ -8,8 +8,10 @@ import { AlertCircle, ArrowLeft, Check, CheckCircle2, CircleX, Clock3, Download,
 import { api } from "@/lib/api";
 import type { EntryComment, EntryFileVersion, EntryReview, EntryStateEvent, EntryStatus } from "@/lib/types";
 import { Badge, Button, Card, CardContent, CardDescription, CardHeader, CardTitle, Spinner, Textarea } from "@/components/ui";
+import { ConfirmDialog } from "@/components/confirm-dialog";
 
 const statusLabel: Record<EntryStatus, string> = { pending: "待投稿", created: "等待审核", reviewed: "审核完成", selected: "Closed as merged", invalid: "Closed as invalid" };
+type ConfirmationAction = "review" | "close-invalid" | "close-merged" | "reopen" | "delete";
 
 function formatTime(value: string) {
   return new Intl.DateTimeFormat("zh-CN", { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
@@ -26,6 +28,7 @@ export default function EntryReviewPage() {
   const [versionNote, setVersionNote] = useState("");
   const [versionFile, setVersionFile] = useState<File | null>(null);
   const [closeNote, setCloseNote] = useState("");
+  const [confirmationAction, setConfirmationAction] = useState<ConfirmationAction | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -91,7 +94,6 @@ export default function EntryReviewPage() {
   };
 
   const completeReview = async () => {
-    if (!window.confirm("确认已完成稿件审核？完成后将不能继续上传审核版本。")) return;
     setBusy("review");
     setError("");
     try {
@@ -101,12 +103,11 @@ export default function EntryReviewPage() {
       setError("无法完成审核，请检查稿件状态。");
     } finally {
       setBusy(null);
+      setConfirmationAction(null);
     }
   };
 
   const closeEntry = async (disposition: "invalid" | "merged") => {
-    const label = disposition === "merged" ? "Close as merged" : "Close as invalid";
-    if (!window.confirm(`确认 ${label}？关闭不会删除任何文件、留言或历史记录。`)) return;
     setBusy(disposition === "merged" ? "close-merged" : "close-invalid");
     setError("");
     try {
@@ -117,11 +118,11 @@ export default function EntryReviewPage() {
       setError(disposition === "merged" ? "无法 Close as merged，请确认审核已经完成。" : "无法 Close as invalid，请检查当前稿件状态。");
     } finally {
       setBusy(null);
+      setConfirmationAction(null);
     }
   };
 
   const reopenEntry = async () => {
-    if (!window.confirm("确认重新打开此稿件？稿件会恢复到关闭前的流程状态。")) return;
     setBusy("reopen");
     setError("");
     try {
@@ -132,11 +133,12 @@ export default function EntryReviewPage() {
       setError("无法重新打开稿件，请检查当前账号权限和期刊状态。");
     } finally {
       setBusy(null);
+      setConfirmationAction(null);
     }
   };
 
   const removeEntry = async () => {
-    if (!entry || !window.confirm(`确认删除“${entry.title}”？文件版本和留言也会一并删除。`)) return;
+    if (!entry) return;
     setBusy("delete");
     try {
       await api.delete(`/entries/${entry.uuid}`);
@@ -144,15 +146,24 @@ export default function EntryReviewPage() {
     } catch {
       setError("删除失败，请检查当前账号权限。");
       setBusy(null);
+      setConfirmationAction(null);
     }
   };
+
+  const confirmation = confirmationAction ? {
+    review: { title: "完成稿件审核？", description: "确认后稿件将进入主编决策阶段，并停止接收新的审核文件版本。", confirmLabel: "完成审核", onConfirm: completeReview, variant: "default" as const },
+    "close-invalid": { title: "Close as invalid？", description: "稿件会被标记为无效并关闭讨论，但文件、留言和全部历史记录都会保留，之后仍可 Reopen。", confirmLabel: "Close as invalid", onConfirm: () => closeEntry("invalid"), variant: "default" as const },
+    "close-merged": { title: "Close as merged？", description: "稿件会被标记为已选取并合并，审阅流程随即关闭；全部数据会保留，之后仍可 Reopen。", confirmLabel: "Close as merged", onConfirm: () => closeEntry("merged"), variant: "default" as const },
+    reopen: { title: "重新打开稿件？", description: "稿件将恢复到关闭前的审核阶段，关闭事件仍会保留在时间线中。", confirmLabel: "Reopen", onConfirm: reopenEntry, variant: "default" as const },
+    delete: { title: "永久删除稿件？", description: `“${entry?.title || "此稿件"}”的文件版本、留言和事件记录都会一并删除，此操作无法撤销。`, confirmLabel: "永久删除", onConfirm: removeEntry, variant: "destructive" as const },
+  }[confirmationAction] : null;
 
   if (loading) return <div className="flex min-h-80 items-center justify-center gap-2 text-sm text-muted-foreground"><Spinner />正在加载审阅记录...</div>;
   if (!entry) return <Card><CardContent className="flex flex-col items-center gap-3 p-12 text-center"><AlertCircle className="h-8 w-8 text-destructive" /><p className="text-sm text-destructive">{error || "稿件不存在。"}</p><Button variant="outline" onClick={load}>重试</Button></CardContent></Card>;
 
   return <div className="mx-auto max-w-6xl space-y-6">
     <Link href={`/issue/${entry.issue_id}`} className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground"><ArrowLeft className="h-4 w-4" />返回第 {entry.issue_id} 期</Link>
-    <header className="border-b pb-6"><div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-start"><div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><Badge className={entry.status === "invalid" ? "bg-red-100 text-red-700" : ""} variant={entry.status === "selected" ? "success" : entry.status === "created" ? "warning" : "muted"}><GitPullRequest className="mr-1 h-3.5 w-3.5" />{statusLabel[entry.status]}</Badge><span className="text-sm text-muted-foreground">第 {entry.issue_id} 期 · 第 {entry.page} 版</span></div><h1 className="mt-3 break-words text-2xl font-bold sm:text-3xl">{entry.title}</h1><p className="mt-2 text-sm text-muted-foreground">{entry.submitter?.username || entry.selector_name || "未知投稿者"} 提交于 {formatTime(entry.created_at)}</p></div>{entry.capabilities.can_delete && <Button variant="ghost" disabled={busy !== null} onClick={removeEntry}><Trash2 className="mr-2 h-4 w-4 text-destructive" />删除稿件</Button>}</div><div className="mt-5 grid gap-3 text-sm sm:grid-cols-3"><Meta label="来源" value={entry.origin} /><Meta label="词数" value={`${entry.wordcount} 字`} /><Meta label="当前文件" value={entry.filename || "无可用文件"} /></div>{entry.description && <p className="mt-5 max-w-3xl border-l-2 border-primary/40 pl-4 text-sm leading-6 text-muted-foreground">{entry.description}</p>}</header>
+    <header className="border-b pb-6"><div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-start"><div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><Badge className={entry.status === "invalid" ? "bg-red-100 text-red-700" : ""} variant={entry.status === "selected" ? "success" : entry.status === "created" ? "warning" : "muted"}><GitPullRequest className="mr-1 h-3.5 w-3.5" />{statusLabel[entry.status]}</Badge><span className="text-sm text-muted-foreground">第 {entry.issue_id} 期 · 第 {entry.page} 版</span></div><h1 className="mt-3 break-words text-2xl font-bold sm:text-3xl">{entry.title}</h1><p className="mt-2 text-sm text-muted-foreground">{entry.submitter?.username || entry.selector_name || "未知投稿者"} 提交于 {formatTime(entry.created_at)}</p></div>{entry.capabilities.can_delete && <Button variant="ghost" disabled={busy !== null} onClick={() => setConfirmationAction("delete")}><Trash2 className="mr-2 h-4 w-4 text-destructive" />删除稿件</Button>}</div><div className="mt-5 grid gap-3 text-sm sm:grid-cols-3"><Meta label="来源" value={entry.origin} /><Meta label="词数" value={`${entry.wordcount} 字`} /><Meta label="当前文件" value={entry.filename || "无可用文件"} /></div>{entry.description && <p className="mt-5 max-w-3xl border-l-2 border-primary/40 pl-4 text-sm leading-6 text-muted-foreground">{entry.description}</p>}</header>
     {error && <div className="flex items-center gap-2 rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive"><AlertCircle className="h-4 w-4 shrink-0" />{error}</div>}
     <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
       <main className="space-y-5">
@@ -162,10 +173,11 @@ export default function EntryReviewPage() {
       <aside className="space-y-4">
         <Card><CardHeader><CardTitle className="text-base">审阅进度</CardTitle></CardHeader><CardContent className="space-y-1"><ProgressStep done label="投稿已提交" detail={entry.submitter?.username || entry.selector_name || "投稿者"} /><ProgressStep done={Boolean(entry.review_completed_at)} active={entry.status === "created"} label="审核完成" detail={entry.review_completed_by?.username || entry.reviewer_name || "等待审核者"} /><ProgressStep done={entry.status === "selected" || entry.status === "invalid"} active={entry.status === "reviewed"} danger={entry.status === "invalid"} label={entry.status === "invalid" ? "Closed as invalid" : entry.status === "selected" ? "Closed as merged" : "等待主编决策"} detail={entry.merged_by?.username || (entry.status === "invalid" ? "稿件已标记为无效" : "尚未关闭")} last /></CardContent></Card>
         {entry.capabilities.can_upload_version && <Card><CardHeader><CardTitle className="flex items-center gap-2 text-base"><Upload className="h-5 w-5 text-primary" />上传审核版本</CardTitle><CardDescription>新文件会成为最新版，历史版本仍可下载。</CardDescription></CardHeader><CardContent className="space-y-3"><label className="flex min-h-24 cursor-pointer flex-col items-center justify-center rounded-md border border-dashed border-primary/40 bg-primary/[0.03] p-3 text-center"><FileText className="h-6 w-6 text-primary" /><span className="mt-2 max-w-full break-all text-sm">{versionFile?.name || "选择 Word 文件"}</span><input className="hidden" type="file" accept=".doc,.docx" onChange={(event) => setVersionFile(event.target.files?.[0] || null)} /></label><Textarea className="min-h-20 resize-y" maxLength={500} placeholder="版本说明（可选）" value={versionNote} onChange={(event) => setVersionNote(event.target.value)} /><Button className="w-full" variant="outline" disabled={busy !== null || !versionFile} onClick={uploadVersion}>{busy === "upload" ? <Spinner className="mr-2" /> : <Upload className="mr-2 h-4 w-4" />}上传新版本</Button></CardContent></Card>}
-        {entry.capabilities.can_complete_review && <Button className="w-full" disabled={busy !== null} onClick={completeReview}>{busy === "review" ? <Spinner className="mr-2" /> : <CheckCircle2 className="mr-2 h-4 w-4" />}我已完成稿件审核</Button>}
-        {(entry.capabilities.can_close || entry.capabilities.can_reopen) && <Card><CardHeader><CardTitle className="text-base">主编决策</CardTitle><CardDescription>关闭和重新打开都不会删除稿件数据。</CardDescription></CardHeader><CardContent className="space-y-3"><Textarea className="min-h-20 resize-y" maxLength={500} placeholder="说明原因（可选，会写入时间线）" value={closeNote} onChange={(event) => setCloseNote(event.target.value)} />{entry.capabilities.can_reopen ? <Button className="w-full" variant="outline" disabled={busy !== null} onClick={reopenEntry}>{busy === "reopen" ? <Spinner className="mr-2" /> : <RotateCcw className="mr-2 h-4 w-4" />}Reopen</Button> : <div className="space-y-2"><Button className="w-full" variant="outline" disabled={busy !== null} onClick={() => closeEntry("invalid")}>{busy === "close-invalid" ? <Spinner className="mr-2" /> : <CircleX className="mr-2 h-4 w-4" />}Close as invalid</Button>{entry.status === "reviewed" && <Button className="w-full bg-green-600 hover:bg-green-700" disabled={busy !== null} onClick={() => closeEntry("merged")}>{busy === "close-merged" ? <Spinner className="mr-2" /> : <GitMerge className="mr-2 h-4 w-4" />}Close as merged</Button>}</div>}</CardContent></Card>}
+        {entry.capabilities.can_complete_review && <Button className="w-full" disabled={busy !== null} onClick={() => setConfirmationAction("review")}><CheckCircle2 className="mr-2 h-4 w-4" />我已完成稿件审核</Button>}
+        {(entry.capabilities.can_close || entry.capabilities.can_reopen) && <Card><CardHeader><CardTitle className="text-base">主编决策</CardTitle><CardDescription>关闭和重新打开都不会删除稿件数据。</CardDescription></CardHeader><CardContent className="space-y-3"><Textarea className="min-h-20 resize-y" maxLength={500} placeholder="说明原因（可选，会写入时间线）" value={closeNote} onChange={(event) => setCloseNote(event.target.value)} />{entry.capabilities.can_reopen ? <Button className="w-full" variant="outline" disabled={busy !== null} onClick={() => setConfirmationAction("reopen")}><RotateCcw className="mr-2 h-4 w-4" />Reopen</Button> : <div className="space-y-2"><Button className="w-full" variant="outline" disabled={busy !== null} onClick={() => setConfirmationAction("close-invalid")}><CircleX className="mr-2 h-4 w-4" />Close as invalid</Button>{entry.status === "reviewed" && <Button className="w-full bg-green-600 hover:bg-green-700" disabled={busy !== null} onClick={() => setConfirmationAction("close-merged")}><GitMerge className="mr-2 h-4 w-4" />Close as merged</Button>}</div>}</CardContent></Card>}
       </aside>
     </div>
+    {confirmation && <ConfirmDialog open title={confirmation.title} description={confirmation.description} confirmLabel={confirmation.confirmLabel} variant={confirmation.variant} busy={busy !== null} onConfirm={confirmation.onConfirm} onOpenChange={(open) => { if (!open) setConfirmationAction(null); }} />}
   </div>;
 }
 
