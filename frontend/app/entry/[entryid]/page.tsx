@@ -1,8 +1,8 @@
 "use client";
 
-import Link from "next/link";
+import { Link, useTransitionRouter } from "@/components/page-transition";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useParams } from "next/navigation";
 import { AlertCircle, ArrowLeft, Check, CheckCircle2, CircleX, Clock3, Download, FileText, GitMerge, GitPullRequest, MessageSquare, RotateCcw, Send, Trash2, Upload } from "lucide-react";
 
 import { api } from "@/lib/api";
@@ -19,7 +19,7 @@ function formatTime(value: string) {
 
 export default function EntryReviewPage() {
   const params = useParams<{ entryid: string }>();
-  const router = useRouter();
+  const router = useTransitionRouter();
   const [entry, setEntry] = useState<EntryReview | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<"comment" | "upload" | "review" | "return-to-review" | "close-invalid" | "close-merged" | "reopen" | "delete" | null>(null);

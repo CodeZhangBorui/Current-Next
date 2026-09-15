@@ -1,6 +1,6 @@
 "use client";
 
-import Link from "next/link";
+import { Link } from "@/components/page-transition";
 import { useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 import { AlertCircle, ArrowLeft, CheckCircle2, Download, Eye, FileText, GitPullRequest, MessageSquare, RefreshCw, Upload } from "lucide-react";

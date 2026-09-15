@@ -1,8 +1,7 @@
 "use client";
 
-import Link from "next/link";
+import { Link, useTransitionRouter } from "@/components/page-transition";
 import { FormEvent, useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
 import { ArrowLeft, CalendarDays, FilePlus2 } from "lucide-react";
 
 import { api } from "@/lib/api";
@@ -10,7 +9,7 @@ import { Button, Card, CardContent, CardDescription, CardHeader, CardTitle, Inpu
 import type { UserChoice } from "@/lib/types";
 
 export default function NewIssuePage() {
-  const router = useRouter();
+  const router = useTransitionRouter();
   const [form, setForm] = useState({ id: "", deadline: "", subject2: "", subject3: "", subject4: "", leaderId: "", editorIds: [] as string[], responsibleEditorId: "" });
   const [users, setUsers] = useState<UserChoice[]>([]);
   const [error, setError] = useState("");

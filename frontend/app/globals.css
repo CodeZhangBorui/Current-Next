@@ -6,53 +6,34 @@
 * { border-color: hsl(var(--border)); }
 html { color-scheme: light; }
 body { margin: 0; background: hsl(var(--background)); color: hsl(var(--foreground)); font-family: Arial, Helvetica, sans-serif; }
-a { transition: color 180ms ease, background-color 180ms ease, border-color 180ms ease, transform 220ms cubic-bezier(0.22, 1, 0.36, 1); }
+a { transition: color 150ms ease, background-color 150ms ease, border-color 150ms ease; }
 
-@keyframes page-enter {
-  from { opacity: 0; transform: translate3d(0, 18px, 0) scale(0.985); filter: blur(2px); }
-  to { opacity: 1; transform: translate3d(0, 0, 0) scale(1); filter: blur(0); }
+@keyframes fluent-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
-@keyframes motion-rise {
-  from { opacity: 0; transform: translate3d(0, 12px, 0); }
-  to { opacity: 1; transform: translate3d(0, 0, 0); }
+@keyframes fluent-rise-in {
+  from { transform: translate3d(0, 22px, 0); }
+  to { transform: translate3d(0, 0, 0); }
 }
 
-@keyframes motion-pop {
-  0% { transform: scale(0.96); }
-  65% { transform: scale(1.025); }
-  100% { transform: scale(1); }
+/* Animate content hierarchy on mount with a subtle upward motion. */
+.app-page > * > * {
+  animation:
+    fluent-fade-in 500ms cubic-bezier(0.1, 0.9, 0.2, 1) both,
+    fluent-rise-in 500ms cubic-bezier(0.2, 0, 0, 1) both;
 }
 
-.page-transition {
-  animation: page-enter 520ms cubic-bezier(0.22, 1, 0.36, 1) both;
-  transform-origin: 50% 0;
-  will-change: opacity, transform, filter;
-}
+.app-page > * > *:nth-child(2) { animation-delay: 35ms; }
 
-.page-transition > * {
-  animation: motion-rise 560ms cubic-bezier(0.22, 1, 0.36, 1) both;
-}
+.app-page > * > *:nth-child(3) { animation-delay: 70ms; }
 
-.page-transition > *:nth-child(2) { animation-delay: 55ms; }
-.page-transition > *:nth-child(3) { animation-delay: 105ms; }
-.page-transition > *:nth-child(4) { animation-delay: 150ms; }
+.app-page > * > *:nth-child(4) { animation-delay: 105ms; }
 
-.motion-card {
-  transition: transform 260ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 260ms ease, border-color 180ms ease;
-}
+.app-page > * > *:nth-child(5) { animation-delay: 140ms; }
 
-.motion-card:hover {
-  transform: translateY(-3px);
-  box-shadow: 0 12px 28px hsl(222 47% 11% / 0.08);
-}
-
-button:not(:disabled) {
-  transition: transform 220ms cubic-bezier(0.22, 1, 0.36, 1), background-color 180ms ease, color 180ms ease, box-shadow 180ms ease;
-}
-
-button:not(:disabled):hover { transform: translateY(-1px); }
-button:not(:disabled):active { transform: translateY(1px) scale(0.98); }
+.app-page > * > *:nth-child(n + 6) { animation-delay: 175ms; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {

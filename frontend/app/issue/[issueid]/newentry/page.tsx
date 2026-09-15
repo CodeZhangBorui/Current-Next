@@ -1,8 +1,8 @@
 "use client";
 
-import Link from "next/link";
+import { Link, useTransitionRouter } from "@/components/page-transition";
 import { FormEvent, useState } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useParams } from "next/navigation";
 import { ArrowLeft, CheckCircle2, FileUp, UploadCloud } from "lucide-react";
 
 import { api } from "@/lib/api";
@@ -10,7 +10,7 @@ import { Button, Card, CardContent, CardDescription, CardHeader, CardTitle, Inpu
 
 export default function NewEntryPage() {
   const params = useParams<{ issueid: string }>();
-  const router = useRouter();
+  const router = useTransitionRouter();
   const [file, setFile] = useState<File | null>(null);
   const [form, setForm] = useState({ page: "1", title: "", origin: "", wordcount: "", description: "" });
   const [error, setError] = useState("");

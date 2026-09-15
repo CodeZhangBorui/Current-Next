@@ -1,7 +1,7 @@
 "use client";
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
-import Link from "next/link";
+import { Link } from "@/components/page-transition";
 import { ArrowLeft, CheckCircle2, Clock3, Eye, KeyRound, Megaphone, Save, Send, UserRound } from "lucide-react";
 import { api } from "@/lib/api";
 import type { AnnouncementManager } from "@/lib/types";

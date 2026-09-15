@@ -1,16 +1,15 @@
 "use client";
 
-import Link from "next/link";
+import { Link, useTransitionRouter } from "@/components/page-transition";
 import { FormEvent, useState } from "react";
 import { ArrowRight, LockKeyhole, Newspaper, UserRound } from "lucide-react";
-import { useRouter } from "next/navigation";
 
 import { api, prepareCsrf } from "@/lib/api";
 import { useSession } from "@/components/session-provider";
 import { Button, Card, CardContent, CardDescription, CardHeader, CardTitle, Input, Spinner } from "@/components/ui";
 
 export default function LoginPage() {
-  const router = useRouter();
+  const router = useTransitionRouter();
   const { refresh } = useSession();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");

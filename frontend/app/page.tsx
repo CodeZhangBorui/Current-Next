@@ -1,6 +1,6 @@
 "use client";
 
-import Link from "next/link";
+import { Link } from "@/components/page-transition";
 import { useEffect, useMemo, useState } from "react";
 import { ArrowRight, CalendarClock, CheckCircle2, CircleDashed, FilePlus2, Megaphone, RefreshCw, Search } from "lucide-react";
 

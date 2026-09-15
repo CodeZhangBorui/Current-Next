@@ -1,4 +1,4 @@
-import Link from "next/link";
+import { Link } from "@/components/page-transition";
 import { ArrowLeft, BarChart3 } from "lucide-react";
 import { Button, Card, CardContent, CardHeader, CardTitle } from "@/components/ui";
 
