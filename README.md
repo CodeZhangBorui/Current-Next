@@ -25,4 +25,4 @@ bun run dev
 
 Set `NEXT_PUBLIC_API_URL=http://127.0.0.1:8000/api/v1` in `frontend/.env.local` for local development.
 
-The canonical Django Admin URL is `/admin/`. The bare `/admin` path is redirected once to `/admin/`; Next.js is configured with `skipTrailingSlashRedirect` and an explicit `/admin/:path(.*)` rewrite so nested Admin URLs are not normalized twice.
+The canonical Django Admin URL is `/admin/`. Next.js does not add an Admin redirect; it uses an explicit `/admin/:path(.*)` rewrite so Django owns the Admin response and nested URLs are not normalized twice. In production, Nginx handles only the bare `/admin` redirect.

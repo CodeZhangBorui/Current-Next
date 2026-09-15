@@ -2,12 +2,9 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   output: "standalone",
-  // Django Admin owns the trailing-slash convention. Let its redirects pass
-  // through instead of having Next.js normalize the same request again.
+  // Django Admin owns the trailing-slash convention. Do not add a Next.js
+  // redirect here: `/admin/` must be proxied directly to Django.
   skipTrailingSlashRedirect: true,
-  async redirects() {
-    return [{ source: "/admin", destination: "/admin/", permanent: false }];
-  },
   async rewrites() {
     const backend = process.env.BACKEND_URL || "http://127.0.0.1:8000";
     return [
