@@ -116,7 +116,7 @@ class Command(BaseCommand):
             self.import_permissions(orion)
             self.import_configuration(orion)
             self.import_audit(orion)
-            self.import_issues(current, uploads_root)
+            self.import_issues(current, uploads_root, report)
             self.import_entries(current, uploads_root)
             ImportRun.objects.create(mode="import", source_fingerprint=report["source_fingerprint"], completed_at=django_timezone.now(), report=report)
 
@@ -173,11 +173,24 @@ class Command(BaseCommand):
         for row in connection.execute("SELECT time, scope, executer, message FROM auditlog").fetchall():
             AuditLog.objects.create(timestamp=datetime.fromtimestamp(row[0], tz=timezone.utc), scope=row[1], executor=row[2] or "", message=row[3] or "")
 
-    def import_issues(self, connection, uploads_root):
+    def import_issues(self, connection, uploads_root, report):
         if not self.table_exists(connection, "issues"):
             return
         for row in connection.execute("SELECT id, date, subject2, subject3, subject4, leader, editors, respeditor, ispublished FROM issues").fetchall():
-            issue = Issue.objects.update_or_create(issue_number=row[0], defaults={"deadline": datetime.fromtimestamp(row[1], tz=timezone.utc), "subject2": row[2] or "", "subject3": row[3] or "", "subject4": row[4] or "", "leader": row[5] or "", "editors": [item for item in (row[6] or "").split(",") if item], "responsible_editor": row[7] or "", "published": bool(row[8])})[0]
+            leader_name = (row[5] or "").strip()
+            responsible_editor_name = (row[7] or "").strip()
+            leader = User.objects.filter(username=leader_name).first() if leader_name else None
+            responsible_editor = User.objects.filter(username=responsible_editor_name).first() if responsible_editor_name else None
+            if leader_name and leader is None:
+                report["warnings"].append(f"issue {row[0]} leader not found: {leader_name}")
+            if responsible_editor_name and responsible_editor is None:
+                report["warnings"].append(f"issue {row[0]} responsible editor not found: {responsible_editor_name}")
+            defaults = {"deadline": datetime.fromtimestamp(row[1], tz=timezone.utc), "subject2": row[2] or "", "subject3": row[3] or "", "subject4": row[4] or "", "leader": leader, "responsible_editor": responsible_editor, "published": bool(row[8])}
+            issue = Issue.objects.update_or_create(issue_number=row[0], defaults=defaults)[0]
+            editor_names = [item.strip() for item in (row[6] or "").split(",") if item.strip()]
+            missing_editors = [name for name in editor_names if not User.objects.filter(username=name).exists()]
+            report["warnings"].extend(f"issue {row[0]} editor not found: {name}" for name in missing_editors)
+            issue.editors.set(User.objects.filter(username__in=editor_names))
             pdf_path = uploads_root / "issues" / f"{issue.issue_number}.pdf"
             if pdf_path.exists() and not issue.pdf:
                 with pdf_path.open("rb") as source:

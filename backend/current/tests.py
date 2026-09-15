@@ -5,6 +5,7 @@ from contextlib import closing
 from pathlib import Path
 
 from django.core.management import call_command
+from django.contrib.auth.models import Permission
 from django.db import connection
 from django.test import TestCase
 
@@ -50,3 +51,31 @@ class LegacyImportTests(TestCase):
             self.assertNotIn("current_legacysession", tables)
             self.assertNotIn("current_legacysudo", tables)
             self.assertNotIn("current_legacypermission", tables)
+
+    def test_issue_api_uses_user_objects_for_people_fields(self):
+        creator = User.objects.create_user(username="creator", password="secret")
+        leader = User.objects.create_user(username="leader", password="secret")
+        editor = User.objects.create_user(username="editor", password="secret")
+        responsible = User.objects.create_user(username="responsible", password="secret")
+        permission = Permission.objects.get(codename="create_issue")
+        creator.user_permissions.add(permission)
+        self.client.force_login(creator)
+
+        response = self.client.post(
+            "/api/v1/issues",
+            {
+                "id": 12,
+                "deadline": "2030-01-02T10:00:00Z",
+                "subject": ["校园", "文化", "体育"],
+                "leader_id": leader.pk,
+                "editor_ids": [editor.pk],
+                "responsible_editor_id": responsible.pk,
+            },
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        data = response.json()
+        self.assertEqual(data["leader"], {"id": leader.pk, "username": "leader", "grade": 0, "classnum": 0, "is_active": True, "is_staff": False})
+        self.assertEqual(data["editors"][0]["username"], "editor")
+        self.assertEqual(data["responsible_editor"]["username"], "responsible")

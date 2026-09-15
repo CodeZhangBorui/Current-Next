@@ -6,12 +6,15 @@ from .models import Entry, Issue, User
 class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
-        fields = ("username", "grade", "classnum", "is_active", "is_staff")
+        fields = ("id", "username", "grade", "classnum", "is_active", "is_staff")
 
 
 class IssueSerializer(serializers.ModelSerializer):
     id = serializers.IntegerField(source="issue_number", read_only=True)
     subject = serializers.SerializerMethodField()
+    leader = UserSerializer(read_only=True, allow_null=True)
+    editors = UserSerializer(many=True, read_only=True)
+    responsible_editor = UserSerializer(read_only=True, allow_null=True)
 
     class Meta:
         model = Issue
@@ -33,6 +36,9 @@ class IssueCreateSerializer(serializers.Serializer):
     id = serializers.IntegerField(min_value=1)
     deadline = serializers.DateTimeField()
     subject = serializers.ListField(child=serializers.CharField(), min_length=3, max_length=3)
+    leader_id = serializers.PrimaryKeyRelatedField(queryset=User.objects.filter(is_active=True), source="leader", required=False, allow_null=True)
+    editor_ids = serializers.PrimaryKeyRelatedField(queryset=User.objects.filter(is_active=True), source="editors", many=True, required=False)
+    responsible_editor_id = serializers.PrimaryKeyRelatedField(queryset=User.objects.filter(is_active=True), source="responsible_editor", required=False, allow_null=True)
 
 
 class EntryCreateSerializer(serializers.Serializer):

@@ -9,7 +9,7 @@ from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
-from .models import Entry, Issue
+from .models import Entry, Issue, User
 from .serializers import EntryCreateSerializer, EntrySerializer, IssueCreateSerializer, IssueSerializer, UserSerializer
 from .services import audit, get_config
 
@@ -64,9 +64,17 @@ def issues(request):
     serializer.is_valid(raise_exception=True)
     data = serializer.validated_data
     subjects = data["subject"]
-    issue = Issue.objects.create(issue_number=data["id"], deadline=data["deadline"], subject2=subjects[0], subject3=subjects[1], subject4=subjects[2])
+    issue = Issue.objects.create(issue_number=data["id"], deadline=data["deadline"], subject2=subjects[0], subject3=subjects[1], subject4=subjects[2], leader=data.get("leader"), responsible_editor=data.get("responsible_editor"))
+    issue.editors.set(data.get("editors", []))
     audit("issues.create", request.user.username, f"创建第 {issue.issue_number} 期")
     return Response(IssueSerializer(issue).data, status=status.HTTP_201_CREATED)
+
+
+@api_view(["GET"])
+def user_choices(request):
+    if not request.user.has_perm("current.create_issue"):
+        return Response({"detail": "没有创建期刊的权限。"}, status=status.HTTP_403_FORBIDDEN)
+    return Response(UserSerializer(User.objects.filter(is_active=True).order_by("username"), many=True).data)
 
 
 @api_view(["GET"])
