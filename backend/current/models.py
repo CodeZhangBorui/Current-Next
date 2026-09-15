@@ -6,12 +6,14 @@ from django.db import models
 
 
 class User(AbstractUser):
-    grade = models.PositiveSmallIntegerField(default=0)
-    classnum = models.PositiveSmallIntegerField(default=0)
+    grade = models.PositiveSmallIntegerField("年级", default=0)
+    classnum = models.PositiveSmallIntegerField("班级", default=0)
     legacy_password_hash = models.CharField(max_length=128, blank=True)
 
     class Meta:
-        permissions = [("access_management", "Can access Current management")]
+        verbose_name = "用户"
+        verbose_name_plural = "用户"
+        permissions = [("access_management", "访问 Current 管理功能")]
 
 
 class Issue(models.Model):
@@ -29,7 +31,9 @@ class Issue(models.Model):
 
     class Meta:
         ordering = ["-issue_number"]
-        permissions = [("create_issue", "Can create issues"), ("publish_issue", "Can publish issues")]
+        verbose_name = "期刊"
+        verbose_name_plural = "期刊"
+        permissions = [("create_issue", "创建期刊"), ("publish_issue", "发布期刊")]
 
 
 class Entry(models.Model):
@@ -63,11 +67,13 @@ class Entry(models.Model):
 
     class Meta:
         ordering = ["page", "created_at"]
+        verbose_name = "稿件"
+        verbose_name_plural = "稿件"
         permissions = [
-            ("create_entry", "Can create entries"),
-            ("review_entry", "Can review entries"),
-            ("select_entry", "Can select entries"),
-            ("remove_entry", "Can remove entries"),
+            ("create_entry", "创建投稿"),
+            ("review_entry", "审核稿件"),
+            ("select_entry", "终审稿件"),
+            ("remove_entry", "删除稿件"),
         ]
 
 
@@ -94,6 +100,8 @@ class EntryFileVersion(models.Model):
 
     class Meta:
         ordering = ["version"]
+        verbose_name = "稿件文件版本"
+        verbose_name_plural = "稿件文件版本"
         constraints = [models.UniqueConstraint(fields=("entry", "version"), name="unique_entry_file_version")]
 
 
@@ -106,6 +114,8 @@ class EntryComment(models.Model):
 
     class Meta:
         ordering = ["created_at", "id"]
+        verbose_name = "稿件留言"
+        verbose_name_plural = "稿件留言"
 
 
 class EntryStateEvent(models.Model):
@@ -127,12 +137,18 @@ class EntryStateEvent(models.Model):
 
     class Meta:
         ordering = ["created_at", "id"]
+        verbose_name = "稿件状态记录"
+        verbose_name_plural = "稿件状态记录"
 
 
 class SiteConfig(models.Model):
     key = models.CharField(max_length=100, unique=True)
     value = models.TextField(blank=True)
     value_type = models.CharField(max_length=16, default="str")
+
+    class Meta:
+        verbose_name = "站点配置"
+        verbose_name_plural = "站点配置"
 
 
 class AuditLog(models.Model):
@@ -143,6 +159,8 @@ class AuditLog(models.Model):
 
     class Meta:
         ordering = ["-timestamp"]
+        verbose_name = "审计日志"
+        verbose_name_plural = "审计日志"
 
 
 class ImportRun(models.Model):
@@ -151,3 +169,7 @@ class ImportRun(models.Model):
     mode = models.CharField(max_length=16)
     source_fingerprint = models.CharField(max_length=64)
     report = models.JSONField(default=dict)
+
+    class Meta:
+        verbose_name = "数据导入记录"
+        verbose_name_plural = "数据导入记录"

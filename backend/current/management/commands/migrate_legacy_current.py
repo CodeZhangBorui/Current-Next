@@ -5,7 +5,7 @@ from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 
-from django.contrib.auth.models import Group, Permission
+from django.contrib.auth.models import Permission
 from django.core.files import File
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
@@ -141,18 +141,13 @@ class Command(BaseCommand):
             user.save(update_fields=["grade", "classnum", "is_active", "legacy_password_hash", "password"] if created else ["grade", "classnum", "is_active", "legacy_password_hash"])
 
     def import_permissions(self, connection):
+        permission_map = {permission.codename: permission for permission in Permission.objects.filter(content_type__app_label="current")}
+        if "create_entry" in permission_map:
+            for user in User.objects.all():
+                user.user_permissions.add(permission_map["create_entry"])
         if not self.table_exists(connection, "permissions"):
             return
         rows = connection.execute("SELECT target, node FROM permissions").fetchall()
-        basic, _ = Group.objects.get_or_create(name="Current Users")
-        editors, _ = Group.objects.get_or_create(name="Current Editors")
-        chiefs, _ = Group.objects.get_or_create(name="Current Chief Editors")
-        administrators, _ = Group.objects.get_or_create(name="Current Administrators")
-        permission_map = {permission.codename: permission for permission in Permission.objects.filter(content_type__app_label="current")}
-        basic.permissions.set([permission_map[name] for name in ("create_entry",) if name in permission_map])
-        editors.permissions.set([permission_map[name] for name in ("review_entry",) if name in permission_map])
-        chiefs.permissions.set([permission_map[name] for name in ("select_entry",) if name in permission_map])
-        administrators.permissions.set(list(permission_map.values()))
         nodes_by_target = {}
         for target, node in rows:
             nodes_by_target.setdefault(target, set()).add(node)
@@ -161,16 +156,16 @@ class Command(BaseCommand):
             nodes = set(direct_nodes)
             for group_name in (node for node in direct_nodes if node.startswith("group.")):
                 nodes.update(nodes_by_target.get(group_name, set()))
-            if "entries.create.*" in nodes:
-                user.groups.add(basic)
+            permission_names = {"create_entry"}
             if "entries.review.*" in nodes:
-                user.groups.add(editors)
+                permission_names.add("review_entry")
             if "entries.select.*" in nodes:
-                user.groups.add(chiefs)
+                permission_names.add("select_entry")
             if "*" in nodes or "management" in nodes:
-                user.groups.add(administrators)
+                permission_names.update(permission_map)
                 user.is_staff = True
                 user.save(update_fields=["is_staff"])
+            user.user_permissions.add(*(permission_map[name] for name in permission_names if name in permission_map))
 
     def import_configuration(self, connection):
         if not self.table_exists(connection, "configuration"):

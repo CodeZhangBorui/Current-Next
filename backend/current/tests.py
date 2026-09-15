@@ -89,11 +89,24 @@ class LegacyImportTests(TestCase):
             self.assertTrue(Entry.objects.get(pk="entry-1").file)
             self.assertEqual(Entry.objects.get(pk="entry-1").versions.count(), 1)
             self.assertEqual(Entry.objects.get(pk="entry-1").versions.get().source, EntryFileVersion.Source.LEGACY)
-            self.assertTrue(user.groups.filter(name="Current Editors").exists())
+            self.assertTrue(user.user_permissions.filter(codename="create_entry").exists())
+            self.assertTrue(user.user_permissions.filter(codename="review_entry").exists())
+            self.assertFalse(user.groups.exists())
             tables = set(connection.introspection.table_names())
             self.assertNotIn("current_legacysession", tables)
             self.assertNotIn("current_legacysudo", tables)
             self.assertNotIn("current_legacypermission", tables)
+
+    def test_new_user_receives_only_default_entry_permission(self):
+        user = User.objects.create_user(username="new-user", password="secret")
+
+        self.assertTrue(user.is_active)
+        self.assertFalse(user.is_staff)
+        self.assertFalse(user.is_superuser)
+        self.assertEqual(set(user.get_all_permissions()), {"current.create_entry"})
+        self.assertEqual(Permission.objects.get(codename="create_entry", content_type__app_label="current").name, "创建投稿")
+        untranslated = list(Permission.objects.exclude(name__regex=r"^[\u4e00-\u9fff]").values_list("codename", "name"))
+        self.assertFalse(untranslated, untranslated)
 
     def test_issue_api_uses_user_objects_for_people_fields(self):
         creator = User.objects.create_user(username="creator", password="secret")

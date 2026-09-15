@@ -2,12 +2,17 @@ from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin
 
 from .models import AuditLog, Entry, EntryComment, EntryFileVersion, EntryStateEvent, ImportRun, Issue, SiteConfig, User
+from .signals import grant_default_permission
 
 
 @admin.register(User)
 class CurrentUserAdmin(UserAdmin):
     fieldsets = UserAdmin.fieldsets + (("Current", {"fields": ("grade", "classnum")} ),)
     list_display = ("username", "grade", "classnum", "is_active", "is_staff")
+
+    def save_related(self, request, form, formsets, change):
+        super().save_related(request, form, formsets, change)
+        grant_default_permission(form.instance)
 
 
 @admin.register(Issue)
