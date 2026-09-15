@@ -2,6 +2,7 @@ from pathlib import Path
 
 from django.contrib.auth import authenticate, login, logout
 from django.http import FileResponse, Http404
+from django.utils import timezone as django_timezone
 from django.views.decorators.csrf import ensure_csrf_cookie
 from rest_framework import status
 from rest_framework.decorators import api_view, parser_classes, permission_classes
@@ -10,8 +11,8 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
 from .models import Entry, Issue, User
-from .serializers import EntryCreateSerializer, EntrySerializer, IssueCreateSerializer, IssueSerializer, UserSerializer
-from .services import audit, get_config
+from .serializers import AnnouncementUpdateSerializer, EntryCreateSerializer, EntrySerializer, IssueCreateSerializer, IssueSerializer, UserSerializer
+from .services import audit, get_config, set_config
 
 
 @api_view(["GET"])
@@ -194,4 +195,37 @@ def entry_file(request, entry_uuid):
 
 @api_view(["GET"])
 def announcement(request):
-    return Response({"content": get_config("site.announcement", "站点公告可在管理后台修改。"), "has_pdf": bool(get_config("site.announcementpdf", ""))})
+    return Response({
+        "content": get_config("site.announcement", ""),
+        "published_at": get_config("site.announcement_published_at", ""),
+        "has_pdf": bool(get_config("site.announcementpdf", "")),
+    })
+
+
+@api_view(["GET", "POST"])
+def manage_announcement(request):
+    if not request.user.is_staff:
+        return Response({"detail": "仅管理员可以管理公告。"}, status=status.HTTP_403_FORBIDDEN)
+
+    if request.method == "GET":
+        return Response({
+            "draft": get_config("site.announcement_draft", get_config("site.announcement", "")),
+            "published": get_config("site.announcement", ""),
+            "published_at": get_config("site.announcement_published_at", ""),
+            "published_by": get_config("site.announcement_published_by", ""),
+        })
+
+    serializer = AnnouncementUpdateSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    content = serializer.validated_data["content"]
+    set_config("site.announcement_draft", content)
+    if serializer.validated_data["action"] == "save":
+        audit("announcement.save", request.user.username, "保存公告草稿")
+        return Response({"draft": content, "detail": "公告草稿已保存。"})
+
+    published_at = django_timezone.now().isoformat()
+    set_config("site.announcement", content)
+    set_config("site.announcement_published_at", published_at)
+    set_config("site.announcement_published_by", request.user.username)
+    audit("announcement.publish", request.user.username, "发布站点公告")
+    return Response({"content": content, "published_at": published_at, "published_by": request.user.username, "detail": "公告已发布。"})

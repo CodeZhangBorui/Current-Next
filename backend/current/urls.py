@@ -19,4 +19,5 @@ urlpatterns = [
     path("entries/<str:entry_uuid>", views.remove_entry),
     path("entries/<str:entry_uuid>/file", views.entry_file),
     path("announcement", views.announcement),
+    path("announcement/manage", views.manage_announcement),
 ]

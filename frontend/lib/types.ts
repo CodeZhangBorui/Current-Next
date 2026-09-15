@@ -2,3 +2,4 @@ export type User = { username: string; grade: number; classnum: number; is_activ
 export type UserChoice = { id: number; username: string; grade: number; classnum: number; is_active: boolean; is_staff: boolean };
 export type Issue = { id: number; deadline: string; subject: string[]; leader: UserChoice | null; editors: UserChoice[]; responsible_editor: UserChoice | null; published: boolean };
 export type Entry = { uuid: string; issue_id: number; filename: string; page: number; title: string; origin: string; wordcount: number; description: string; selector_name: string; reviewer_name: string; status: "pending" | "created" | "reviewed" | "selected" };
+export type AnnouncementManager = { draft: string; published: string; published_at: string; published_by: string };

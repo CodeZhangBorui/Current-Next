@@ -99,3 +99,28 @@ class LegacyImportTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 201)
+
+    def test_staff_member_can_save_and_publish_announcement(self):
+        administrator = User.objects.create_user(username="announcement-admin", password="secret", is_staff=True)
+        member = User.objects.create_user(username="announcement-member", password="secret")
+
+        self.client.force_login(member)
+        self.assertEqual(self.client.get("/api/v1/announcement/manage").status_code, 403)
+
+        self.client.force_login(administrator)
+        draft = self.client.post(
+            "/api/v1/announcement/manage",
+            {"action": "save", "content": "明天中午截止收稿。"},
+            content_type="application/json",
+        )
+        self.assertEqual(draft.status_code, 200)
+        self.assertEqual(draft.json()["draft"], "明天中午截止收稿。")
+        self.assertEqual(self.client.get("/api/v1/announcement").json()["content"], "")
+
+        published = self.client.post(
+            "/api/v1/announcement/manage",
+            {"action": "publish", "content": "本期征稿将于明天中午截止。"},
+            content_type="application/json",
+        )
+        self.assertEqual(published.status_code, 200)
+        self.assertEqual(self.client.get("/api/v1/announcement").json()["content"], "本期征稿将于明天中午截止。")

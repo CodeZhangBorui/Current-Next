@@ -48,3 +48,8 @@ class EntryCreateSerializer(serializers.Serializer):
     wordcount = serializers.IntegerField(min_value=1)
     description = serializers.CharField(required=False, allow_blank=True)
     file = serializers.FileField()
+
+
+class AnnouncementUpdateSerializer(serializers.Serializer):
+    action = serializers.ChoiceField(choices=("save", "publish"))
+    content = serializers.CharField(max_length=4000, allow_blank=True, trim_whitespace=True)
