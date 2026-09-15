@@ -1,0 +1,13 @@
+backend/.venv/
+backend/__pycache__/
+backend/**/__pycache__/
+backend/.env
+backend/db.sqlite3
+backend/db.sqlite3-journal
+backend/media/
+backend/staticfiles/
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/.env.local
+legacy-report.json

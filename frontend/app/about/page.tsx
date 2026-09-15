@@ -1,0 +1,2 @@
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui";
+export default function AboutPage() { return <Card><CardHeader><CardTitle>关于 Current</CardTitle></CardHeader><CardContent className="space-y-2 text-sm text-muted-foreground"><p>Current - An intelligent platform for scholar newspaper.</p><p>前端：React + Next.js + shadcn/ui + Axios</p><p>后端：Django + Django REST Framework</p></CardContent></Card>; }
