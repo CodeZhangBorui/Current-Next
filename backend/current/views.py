@@ -250,7 +250,7 @@ def close_entry(request, entry_uuid):
         return Response({"detail": "投稿不存在。"}, status=status.HTTP_404_NOT_FOUND)
     if not is_entry_chief(request.user, entry):
         return Response({"detail": "只有主编级用户可以关闭稿件。"}, status=status.HTTP_403_FORBIDDEN)
-    if entry.status not in (Entry.Status.CREATED, Entry.Status.REVIEWED) or entry.issue.published:
+    if entry.status not in (Entry.Status.CREATED, Entry.Status.REVIEWED):
         return Response({"detail": "稿件当前不能关闭。"}, status=status.HTTP_400_BAD_REQUEST)
     serializer = EntryCloseSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
@@ -270,7 +270,7 @@ def merge_entry(request, entry_uuid):
         return Response({"detail": "投稿不存在。"}, status=status.HTTP_404_NOT_FOUND)
     if not is_entry_chief(request.user, entry):
         return Response({"detail": "只有主编级用户可以合并稿件。"}, status=status.HTTP_403_FORBIDDEN)
-    if entry.status != Entry.Status.REVIEWED or entry.issue.published:
+    if entry.status != Entry.Status.REVIEWED:
         return Response({"detail": "只有已完成审核的稿件可以 Close as merged。"}, status=status.HTTP_400_BAD_REQUEST)
     _close_entry(entry, request.user, "merged")
     audit("entries.close.merged", request.user.username, f"关闭并合并投稿 {entry.uuid}")
@@ -285,7 +285,7 @@ def reopen_entry(request, entry_uuid):
         return Response({"detail": "投稿不存在。"}, status=status.HTTP_404_NOT_FOUND)
     if not is_entry_chief(request.user, entry):
         return Response({"detail": "只有主编级用户可以重新打开稿件。"}, status=status.HTTP_403_FORBIDDEN)
-    if entry.status not in (Entry.Status.SELECTED, Entry.Status.INVALID) or entry.issue.published:
+    if entry.status not in (Entry.Status.SELECTED, Entry.Status.INVALID):
         return Response({"detail": "稿件当前不是可重新打开的关闭状态。"}, status=status.HTTP_400_BAD_REQUEST)
     serializer = EntryReopenSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)

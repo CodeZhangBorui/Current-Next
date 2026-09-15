@@ -1,5 +1,11 @@
-export type User = { username: string; grade: number; classnum: number; is_active: boolean; is_staff: boolean };
+export type User = { id: number; username: string; grade: number; classnum: number; is_active: boolean; is_staff: boolean };
 export type UserChoice = { id: number; username: string; grade: number; classnum: number; is_active: boolean; is_staff: boolean };
 export type Issue = { id: number; deadline: string; subject: string[]; leader: UserChoice | null; editors: UserChoice[]; responsible_editor: UserChoice | null; published: boolean };
-export type Entry = { uuid: string; issue_id: number; filename: string; page: number; title: string; origin: string; wordcount: number; description: string; selector_name: string; reviewer_name: string; status: "pending" | "created" | "reviewed" | "selected" };
+export type EntryStatus = "pending" | "created" | "reviewed" | "selected" | "invalid";
+export type Entry = { uuid: string; issue_id: number; filename: string; page: number; title: string; origin: string; wordcount: number; description: string; submitter: UserChoice | null; selector_name: string; reviewer_name: string; status: EntryStatus; closed_from_status: string; review_completed_by: UserChoice | null; review_completed_at: string | null; merged_by: UserChoice | null; merged_at: string | null; version_count: number; comment_count: number; created_at: string; updated_at: string };
+export type EntryFileVersion = { id: number; version: number; filename: string; uploader: UserChoice | null; uploader_name: string; note: string; source: "submission" | "review" | "legacy"; created_at: string; download_url: string };
+export type EntryComment = { id: number; author: UserChoice | null; author_name: string; body: string; created_at: string };
+export type EntryStateEvent = { id: number; action: "review_completed" | "closed_invalid" | "closed_merged" | "reopened"; actor: UserChoice | null; actor_name: string; from_status: string; to_status: string; note: string; created_at: string };
+export type EntryCapabilities = { can_comment: boolean; can_upload_version: boolean; can_complete_review: boolean; can_merge: boolean; can_close: boolean; can_reopen: boolean; can_delete: boolean };
+export type EntryReview = Entry & { versions: EntryFileVersion[]; comments: EntryComment[]; state_events: EntryStateEvent[]; capabilities: EntryCapabilities };
 export type AnnouncementManager = { draft: string; published: string; published_at: string; published_by: string };

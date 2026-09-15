@@ -63,7 +63,7 @@ class EntrySerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Entry
-        fields = ("uuid", "issue_id", "filename", "page", "title", "origin", "wordcount", "description", "submitter", "selector_name", "reviewer_name", "status", "review_completed_by", "review_completed_at", "merged_by", "merged_at", "version_count", "comment_count", "created_at", "updated_at")
+        fields = ("uuid", "issue_id", "filename", "page", "title", "origin", "wordcount", "description", "submitter", "selector_name", "reviewer_name", "status", "closed_from_status", "review_completed_by", "review_completed_at", "merged_by", "merged_at", "version_count", "comment_count", "created_at", "updated_at")
 
 
 class EntryReviewSerializer(EntrySerializer):
@@ -82,8 +82,8 @@ class EntryReviewSerializer(EntrySerializer):
             "can_upload_version": is_entry_reviewer(user, obj) and obj.status == Entry.Status.CREATED and not obj.issue.published,
             "can_complete_review": is_entry_reviewer(user, obj) and obj.status == Entry.Status.CREATED and obj.versions.exists(),
             "can_merge": is_entry_chief(user, obj) and obj.status == Entry.Status.REVIEWED and not obj.issue.published,
-            "can_close": is_entry_chief(user, obj) and obj.status in (Entry.Status.CREATED, Entry.Status.REVIEWED) and not obj.issue.published,
-            "can_reopen": is_entry_chief(user, obj) and obj.status in (Entry.Status.SELECTED, Entry.Status.INVALID) and not obj.issue.published,
+            "can_close": is_entry_chief(user, obj) and obj.status in (Entry.Status.CREATED, Entry.Status.REVIEWED),
+            "can_reopen": is_entry_chief(user, obj) and obj.status in (Entry.Status.SELECTED, Entry.Status.INVALID),
             "can_delete": user.has_perm("current.remove_entry"),
         }
 
