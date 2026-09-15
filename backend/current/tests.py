@@ -5,10 +5,12 @@ from contextlib import closing
 from pathlib import Path
 
 from django.core.management import call_command
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.contrib.auth.models import Permission
 from django.db import connection
 from django.test import Client
 from django.test import TestCase
+from django.utils import timezone
 
 from .models import Entry, Issue, User
 
@@ -124,3 +126,24 @@ class LegacyImportTests(TestCase):
         )
         self.assertEqual(published.status_code, 200)
         self.assertEqual(self.client.get("/api/v1/announcement").json()["content"], "本期征稿将于明天中午截止。")
+
+    def test_entry_api_accepts_multipart_upload(self):
+        contributor = User.objects.create_user(username="contributor", password="secret")
+        contributor.user_permissions.add(Permission.objects.get(codename="create_entry"))
+        Issue.objects.create(issue_number=88, deadline=timezone.now())
+        self.client.force_login(contributor)
+
+        response = self.client.post(
+            "/api/v1/issues/88/entries",
+            {
+                "page": "1",
+                "title": "投稿标题",
+                "origin": "校园记者站",
+                "wordcount": "120",
+                "description": "投稿简介",
+                "file": SimpleUploadedFile("article.docx", b"document-content"),
+            },
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json()["filename"], "article.docx")

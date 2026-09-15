@@ -3,7 +3,6 @@ import axios from "axios";
 export const api = axios.create({
   baseURL: process.env.NEXT_PUBLIC_API_URL || "/api/v1",
   withCredentials: true,
-  headers: { "Content-Type": "application/json" },
 });
 
 export async function prepareCsrf() {
@@ -11,6 +10,10 @@ export async function prepareCsrf() {
 }
 
 api.interceptors.request.use((config) => {
+  if (typeof FormData !== "undefined" && config.data instanceof FormData) {
+    // Let the browser add the multipart boundary required by Django's parser.
+    config.headers.delete("Content-Type");
+  }
   if (typeof document !== "undefined") {
     const token = document.cookie.split("; ").find((item) => item.startsWith("csrftoken="))?.split("=")[1];
     if (token) config.headers["X-CSRFToken"] = decodeURIComponent(token);
