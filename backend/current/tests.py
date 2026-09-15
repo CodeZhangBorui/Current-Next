@@ -7,6 +7,7 @@ from pathlib import Path
 from django.core.management import call_command
 from django.contrib.auth.models import Permission
 from django.db import connection
+from django.test import Client
 from django.test import TestCase
 
 from .models import Entry, Issue, User
@@ -80,3 +81,21 @@ class LegacyImportTests(TestCase):
         self.assertEqual(data["leader"], {"id": leader.pk, "username": "leader", "grade": 0, "classnum": 0, "is_active": True, "is_staff": False})
         self.assertEqual(data["editors"][0]["username"], "editor")
         self.assertEqual(data["responsible_editor"]["username"], "responsible")
+
+    def test_local_next_origin_is_allowed_for_csrf_protected_post(self):
+        creator = User.objects.create_user(username="csrf-creator", password="secret")
+        creator.user_permissions.add(Permission.objects.get(codename="create_issue"))
+        client = Client(enforce_csrf_checks=True)
+        client.force_login(creator)
+
+        csrf_response = client.get("/api/v1/auth/csrf", HTTP_ORIGIN="http://localhost:3000")
+        token = csrf_response.cookies["csrftoken"].value
+        response = client.post(
+            "/api/v1/issues",
+            {"id": 99, "deadline": "2030-01-02T10:00:00Z", "subject": ["校园", "文化", "体育"]},
+            content_type="application/json",
+            HTTP_ORIGIN="http://localhost:3000",
+            HTTP_X_CSRFTOKEN=token,
+        )
+
+        self.assertEqual(response.status_code, 201)

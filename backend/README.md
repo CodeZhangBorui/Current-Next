@@ -28,3 +28,5 @@ Run a validation pass first:
 Remove `--dry-run` only after the report has no errors and the target database has been backed up.
 
 The new application has no sudo-token authentication. Legacy `sessions` and `sudo` tables are intentionally ignored during import because they are short-lived credentials. All administration is handled by Django Admin at `/admin/`.
+
+For local development, the default CSRF trusted origins include `http://localhost:3000` and `http://127.0.0.1:3000`. In production, set `CSRF_TRUSTED_ORIGINS` to the public HTTPS origin used by the browser, separated by commas.
