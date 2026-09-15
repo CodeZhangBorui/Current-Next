@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from django.contrib.auth import authenticate, login, logout
+from django.db import transaction
 from django.http import FileResponse, Http404
 from django.utils import timezone as django_timezone
 from django.views.decorators.csrf import ensure_csrf_cookie
@@ -10,8 +11,9 @@ from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
-from .models import Entry, Issue, User
-from .serializers import AnnouncementUpdateSerializer, EntryCreateSerializer, EntrySerializer, IssueCreateSerializer, IssueSerializer, UserSerializer
+from .models import Entry, EntryComment, EntryFileVersion, Issue, User
+from .permissions import can_comment_on_entry, is_entry_chief, is_entry_reviewer
+from .serializers import AnnouncementUpdateSerializer, EntryCommentCreateSerializer, EntryCreateSerializer, EntryReviewSerializer, EntrySerializer, EntryVersionCreateSerializer, IssueCreateSerializer, IssueSerializer, UserSerializer
 from .services import audit, get_config, set_config
 
 
@@ -132,44 +134,107 @@ def entries(request, issue_number):
     serializer = EntryCreateSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
     data = serializer.validated_data
-    entry = Entry.objects.create(issue=issue, filename=data["file"].name, file=data["file"], page=data["page"], title=data["title"], origin=data["origin"], wordcount=data["wordcount"], description=data.get("description", ""), selector_name=request.user.username, status=Entry.Status.CREATED)
+    entry = Entry.objects.create(issue=issue, filename=data["file"].name, file=data["file"], page=data["page"], title=data["title"], origin=data["origin"], wordcount=data["wordcount"], description=data.get("description", ""), submitter=request.user, selector_name=request.user.username, status=Entry.Status.CREATED)
+    EntryFileVersion.objects.create(entry=entry, version=1, filename=entry.filename, file=entry.file.name, uploader=request.user, uploader_name=request.user.username, source=EntryFileVersion.Source.SUBMISSION, note="投稿者上传的初始版本")
     audit("entries.create", request.user.username, f"创建投稿 {entry.uuid}")
     return Response(EntrySerializer(entry).data, status=status.HTTP_201_CREATED)
 
 
+@api_view(["GET"])
+def entry_review_detail(request, entry_uuid):
+    try:
+        entry = Entry.objects.select_related("issue", "issue__leader", "issue__responsible_editor", "submitter", "review_completed_by", "merged_by").prefetch_related("issue__editors", "versions__uploader", "comments__author").get(uuid=entry_uuid)
+    except Entry.DoesNotExist:
+        return Response({"detail": "投稿不存在。"}, status=status.HTTP_404_NOT_FOUND)
+    return Response(EntryReviewSerializer(entry, context={"request": request}).data)
+
+
 @api_view(["POST"])
 @parser_classes([MultiPartParser, FormParser])
-def review_entry(request, entry_uuid):
-    if not request.user.has_perm("current.review_entry"):
-        return Response({"detail": "没有审核投稿的权限。"}, status=status.HTTP_403_FORBIDDEN)
+def upload_entry_version(request, entry_uuid):
     try:
-        entry = Entry.objects.get(uuid=entry_uuid)
+        entry = Entry.objects.select_related("issue").get(uuid=entry_uuid)
     except Entry.DoesNotExist:
         return Response({"detail": "投稿不存在。"}, status=status.HTTP_404_NOT_FOUND)
-    if entry.status != Entry.Status.CREATED or not request.FILES.get("file"):
-        return Response({"detail": "投稿当前不能审核，或缺少审核文件。"}, status=status.HTTP_400_BAD_REQUEST)
-    entry.file = request.FILES["file"]
-    entry.filename = request.FILES["file"].name
-    entry.reviewer_name = request.user.username
-    entry.status = Entry.Status.REVIEWED
-    entry.save(update_fields=["file", "filename", "reviewer_name", "status", "updated_at"])
-    audit("entries.review", request.user.username, f"审核投稿 {entry.uuid}")
-    return Response(EntrySerializer(entry).data)
+    if not is_entry_reviewer(request.user, entry):
+        return Response({"detail": "没有上传审核版本的权限。"}, status=status.HTTP_403_FORBIDDEN)
+    if entry.status != Entry.Status.CREATED or entry.issue.published:
+        return Response({"detail": "稿件当前不能再上传审核版本。"}, status=status.HTTP_400_BAD_REQUEST)
+    serializer = EntryVersionCreateSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+
+    with transaction.atomic():
+        entry = Entry.objects.select_for_update().get(uuid=entry_uuid)
+        latest = entry.versions.order_by("-version").first()
+        version_number = latest.version + 1 if latest else 1
+        uploaded_file = serializer.validated_data["file"]
+        version = EntryFileVersion.objects.create(
+            entry=entry,
+            version=version_number,
+            filename=uploaded_file.name,
+            file=uploaded_file,
+            uploader=request.user,
+            uploader_name=request.user.username,
+            source=EntryFileVersion.Source.REVIEW,
+            note=serializer.validated_data.get("note", ""),
+        )
+        entry.file = version.file.name
+        entry.filename = version.filename
+        entry.save(update_fields=["file", "filename", "updated_at"])
+    audit("entries.version.create", request.user.username, f"为投稿 {entry.uuid} 上传 v{version.version}")
+    return Response(EntryReviewSerializer(entry, context={"request": request}).data, status=status.HTTP_201_CREATED)
 
 
 @api_view(["POST"])
-def select_entry(request, entry_uuid):
-    if not request.user.has_perm("current.select_entry"):
-        return Response({"detail": "没有选录投稿的权限。"}, status=status.HTTP_403_FORBIDDEN)
+def add_entry_comment(request, entry_uuid):
     try:
-        entry = Entry.objects.get(uuid=entry_uuid)
+        entry = Entry.objects.select_related("issue").get(uuid=entry_uuid)
     except Entry.DoesNotExist:
         return Response({"detail": "投稿不存在。"}, status=status.HTTP_404_NOT_FOUND)
-    if entry.status not in (Entry.Status.REVIEWED, Entry.Status.SELECTED):
-        return Response({"detail": "投稿尚未审核。"}, status=status.HTTP_400_BAD_REQUEST)
-    entry.status = Entry.Status.REVIEWED if entry.status == Entry.Status.SELECTED else Entry.Status.SELECTED
-    entry.save(update_fields=["status", "updated_at"])
-    return Response(EntrySerializer(entry).data)
+    if not can_comment_on_entry(request.user, entry) or entry.status == Entry.Status.SELECTED:
+        return Response({"detail": "没有在此稿件留言的权限。"}, status=status.HTTP_403_FORBIDDEN)
+    serializer = EntryCommentCreateSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    comment = EntryComment.objects.create(entry=entry, author=request.user, author_name=request.user.username, body=serializer.validated_data["body"])
+    audit("entries.comment.create", request.user.username, f"在投稿 {entry.uuid} 留言")
+    return Response(EntryReviewSerializer(entry, context={"request": request}).data, status=status.HTTP_201_CREATED)
+
+
+@api_view(["POST"])
+def complete_entry_review(request, entry_uuid):
+    try:
+        entry = Entry.objects.select_related("issue").get(uuid=entry_uuid)
+    except Entry.DoesNotExist:
+        return Response({"detail": "投稿不存在。"}, status=status.HTTP_404_NOT_FOUND)
+    if not is_entry_reviewer(request.user, entry):
+        return Response({"detail": "没有完成审核的权限。"}, status=status.HTTP_403_FORBIDDEN)
+    if entry.status != Entry.Status.CREATED or not entry.versions.exists():
+        return Response({"detail": "稿件当前不能标记为审核完成。"}, status=status.HTTP_400_BAD_REQUEST)
+    entry.status = Entry.Status.REVIEWED
+    entry.reviewer_name = request.user.username
+    entry.review_completed_by = request.user
+    entry.review_completed_at = django_timezone.now()
+    entry.save(update_fields=["status", "reviewer_name", "review_completed_by", "review_completed_at", "updated_at"])
+    audit("entries.review.complete", request.user.username, f"完成投稿 {entry.uuid} 的审核")
+    return Response(EntryReviewSerializer(entry, context={"request": request}).data)
+
+
+@api_view(["POST"])
+def merge_entry(request, entry_uuid):
+    try:
+        entry = Entry.objects.select_related("issue").get(uuid=entry_uuid)
+    except Entry.DoesNotExist:
+        return Response({"detail": "投稿不存在。"}, status=status.HTTP_404_NOT_FOUND)
+    if not is_entry_chief(request.user, entry):
+        return Response({"detail": "没有合并稿件的权限。"}, status=status.HTTP_403_FORBIDDEN)
+    if entry.status != Entry.Status.REVIEWED or entry.issue.published:
+        return Response({"detail": "只有已完成审核的稿件可以合并。"}, status=status.HTTP_400_BAD_REQUEST)
+    entry.status = Entry.Status.SELECTED
+    entry.merged_by = request.user
+    entry.merged_at = django_timezone.now()
+    entry.save(update_fields=["status", "merged_by", "merged_at", "updated_at"])
+    audit("entries.merge", request.user.username, f"合并投稿 {entry.uuid}")
+    return Response(EntryReviewSerializer(entry, context={"request": request}).data)
 
 
 @api_view(["DELETE"])
@@ -191,6 +256,15 @@ def entry_file(request, entry_uuid):
     if not entry.file:
         raise Http404
     return FileResponse(entry.file.open("rb"), as_attachment=True, filename=entry.filename or Path(entry.file.name).name)
+
+
+@api_view(["GET"])
+def entry_version_file(request, entry_uuid, version_number):
+    try:
+        version = EntryFileVersion.objects.get(entry_id=entry_uuid, version=version_number)
+    except EntryFileVersion.DoesNotExist:
+        raise Http404
+    return FileResponse(version.file.open("rb"), as_attachment=True, filename=version.filename)
 
 
 @api_view(["GET"])

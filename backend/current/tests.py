@@ -12,7 +12,7 @@ from django.test import Client
 from django.test import TestCase
 from django.utils import timezone
 
-from .models import Entry, Issue, User
+from .models import Entry, EntryFileVersion, Issue, User
 
 
 class LegacyImportTests(TestCase):
@@ -29,7 +29,7 @@ class LegacyImportTests(TestCase):
             with closing(sqlite3.connect(orion_db)) as db:
                 db.executescript("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, passwd TEXT, grade TEXT, classnum TEXT, active TEXT); CREATE TABLE permissions (target TEXT, node TEXT); CREATE TABLE configuration (key TEXT PRIMARY KEY, value TEXT, type TEXT, defaultval TEXT); CREATE TABLE auditlog (time INTEGER, scope TEXT, executer TEXT, message TEXT);")
                 db.execute("INSERT INTO users VALUES (7, 'student', ?, '10', '2', '0')", (hashlib.sha256(b"secret").hexdigest(),))
-                db.execute("INSERT INTO permissions VALUES ('student', 'clients.login')")
+                db.executemany("INSERT INTO permissions VALUES (?, ?)", (("student", "clients.login"), ("student", "group.default"), ("group.default", "entries.review.*")))
                 db.execute("INSERT INTO configuration VALUES ('site.announcement', 'hello', 'str', 'hello')")
                 db.execute("INSERT INTO auditlog VALUES (1700000000, 'test', 'student', 'created')")
                 db.commit()
@@ -51,6 +51,9 @@ class LegacyImportTests(TestCase):
             self.assertEqual(Entry.objects.get(pk="entry-1").filename, "article.docx")
             self.assertTrue(Issue.objects.get(pk=1).pdf)
             self.assertTrue(Entry.objects.get(pk="entry-1").file)
+            self.assertEqual(Entry.objects.get(pk="entry-1").versions.count(), 1)
+            self.assertEqual(Entry.objects.get(pk="entry-1").versions.get().source, EntryFileVersion.Source.LEGACY)
+            self.assertTrue(user.groups.filter(name="Current Editors").exists())
             tables = set(connection.introspection.table_names())
             self.assertNotIn("current_legacysession", tables)
             self.assertNotIn("current_legacysudo", tables)
@@ -147,3 +150,68 @@ class LegacyImportTests(TestCase):
 
         self.assertEqual(response.status_code, 201)
         self.assertEqual(response.json()["filename"], "article.docx")
+        self.assertEqual(Entry.objects.get(pk=response.json()["uuid"]).versions.count(), 1)
+
+    def test_pull_request_style_entry_review_workflow(self):
+        submitter = User.objects.create_user(username="submitter", password="secret")
+        reviewer = User.objects.create_user(username="reviewer", password="secret")
+        chief = User.objects.create_user(username="chief", password="secret")
+        outsider = User.objects.create_user(username="outsider", password="secret")
+        submitter.user_permissions.add(Permission.objects.get(codename="create_entry"))
+        issue = Issue.objects.create(issue_number=89, deadline=timezone.now(), responsible_editor=chief)
+        issue.editors.add(reviewer)
+
+        with tempfile.TemporaryDirectory() as media_root, self.settings(MEDIA_ROOT=media_root):
+            self.client.force_login(submitter)
+            created = self.client.post(
+                "/api/v1/issues/89/entries",
+                {
+                    "page": "2",
+                    "title": "版本化稿件",
+                    "origin": "校园记者站",
+                    "wordcount": "240",
+                    "description": "用于审核流程测试",
+                    "file": SimpleUploadedFile("draft-v1.docx", b"version-one"),
+                },
+            )
+            self.assertEqual(created.status_code, 201)
+            entry_uuid = created.json()["uuid"]
+
+            self.client.force_login(outsider)
+            denied = self.client.post(f"/api/v1/entries/{entry_uuid}/comments", {"body": "不应被接受"}, content_type="application/json")
+            self.assertEqual(denied.status_code, 403)
+
+            self.client.force_login(reviewer)
+            detail = self.client.get(f"/api/v1/entries/{entry_uuid}/review")
+            self.assertTrue(detail.json()["capabilities"]["can_upload_version"])
+            comment = self.client.post(f"/api/v1/entries/{entry_uuid}/comments", {"body": "请调整标题。"}, content_type="application/json")
+            self.assertEqual(comment.status_code, 201)
+            uploaded = self.client.post(
+                f"/api/v1/entries/{entry_uuid}/versions",
+                {"note": "已调整标题", "file": SimpleUploadedFile("draft-v2.docx", b"version-two")},
+            )
+            self.assertEqual(uploaded.status_code, 201)
+            self.assertEqual([version["version"] for version in uploaded.json()["versions"]], [1, 2])
+            completed = self.client.post(f"/api/v1/entries/{entry_uuid}/complete-review", {}, content_type="application/json")
+            self.assertEqual(completed.status_code, 200)
+            self.assertEqual(completed.json()["status"], Entry.Status.REVIEWED)
+            locked_upload = self.client.post(
+                f"/api/v1/entries/{entry_uuid}/versions",
+                {"file": SimpleUploadedFile("draft-v3.docx", b"version-three")},
+            )
+            self.assertEqual(locked_upload.status_code, 400)
+
+            self.client.force_login(chief)
+            chief_detail = self.client.get(f"/api/v1/entries/{entry_uuid}/review")
+            self.assertTrue(chief_detail.json()["capabilities"]["can_merge"])
+            chief_comment = self.client.post(f"/api/v1/entries/{entry_uuid}/comments", {"body": "终审通过。"}, content_type="application/json")
+            self.assertEqual(chief_comment.status_code, 201)
+            merged = self.client.post(f"/api/v1/entries/{entry_uuid}/merge", {}, content_type="application/json")
+            self.assertEqual(merged.status_code, 200)
+            self.assertEqual(merged.json()["status"], Entry.Status.SELECTED)
+            self.assertEqual(merged.json()["merged_by"]["username"], "chief")
+            self.assertEqual(len(merged.json()["comments"]), 2)
+
+            entry = Entry.objects.get(pk=entry_uuid)
+            self.assertEqual(entry.versions.count(), 2)
+            self.assertEqual(entry.filename, "draft-v2.docx")

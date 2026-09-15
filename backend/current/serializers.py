@@ -1,12 +1,33 @@
 from rest_framework import serializers
 
-from .models import Entry, Issue, User
+from .models import Entry, EntryComment, EntryFileVersion, Issue, User
+from .permissions import can_comment_on_entry, is_entry_chief, is_entry_reviewer
 
 
 class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
         fields = ("id", "username", "grade", "classnum", "is_active", "is_staff")
+
+
+class EntryFileVersionSerializer(serializers.ModelSerializer):
+    uploader = UserSerializer(read_only=True, allow_null=True)
+    download_url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = EntryFileVersion
+        fields = ("id", "version", "filename", "uploader", "uploader_name", "note", "source", "created_at", "download_url")
+
+    def get_download_url(self, obj):
+        return f"/api/v1/entries/{obj.entry_id}/versions/{obj.version}/file"
+
+
+class EntryCommentSerializer(serializers.ModelSerializer):
+    author = UserSerializer(read_only=True, allow_null=True)
+
+    class Meta:
+        model = EntryComment
+        fields = ("id", "author", "author_name", "body", "created_at")
 
 
 class IssueSerializer(serializers.ModelSerializer):
@@ -26,10 +47,34 @@ class IssueSerializer(serializers.ModelSerializer):
 
 class EntrySerializer(serializers.ModelSerializer):
     issue_id = serializers.IntegerField(source="issue.issue_number", read_only=True)
+    submitter = UserSerializer(read_only=True, allow_null=True)
+    review_completed_by = UserSerializer(read_only=True, allow_null=True)
+    merged_by = UserSerializer(read_only=True, allow_null=True)
+    version_count = serializers.IntegerField(source="versions.count", read_only=True)
+    comment_count = serializers.IntegerField(source="comments.count", read_only=True)
 
     class Meta:
         model = Entry
-        fields = ("uuid", "issue_id", "filename", "page", "title", "origin", "wordcount", "description", "selector_name", "reviewer_name", "status")
+        fields = ("uuid", "issue_id", "filename", "page", "title", "origin", "wordcount", "description", "submitter", "selector_name", "reviewer_name", "status", "review_completed_by", "review_completed_at", "merged_by", "merged_at", "version_count", "comment_count", "created_at", "updated_at")
+
+
+class EntryReviewSerializer(EntrySerializer):
+    versions = EntryFileVersionSerializer(many=True, read_only=True)
+    comments = EntryCommentSerializer(many=True, read_only=True)
+    capabilities = serializers.SerializerMethodField()
+
+    class Meta(EntrySerializer.Meta):
+        fields = EntrySerializer.Meta.fields + ("versions", "comments", "capabilities")
+
+    def get_capabilities(self, obj):
+        user = self.context["request"].user
+        return {
+            "can_comment": can_comment_on_entry(user, obj) and obj.status != Entry.Status.SELECTED,
+            "can_upload_version": is_entry_reviewer(user, obj) and obj.status == Entry.Status.CREATED and not obj.issue.published,
+            "can_complete_review": is_entry_reviewer(user, obj) and obj.status == Entry.Status.CREATED and obj.versions.exists(),
+            "can_merge": is_entry_chief(user, obj) and obj.status == Entry.Status.REVIEWED and not obj.issue.published,
+            "can_delete": user.has_perm("current.remove_entry"),
+        }
 
 
 class IssueCreateSerializer(serializers.Serializer):
@@ -48,6 +93,15 @@ class EntryCreateSerializer(serializers.Serializer):
     wordcount = serializers.IntegerField(min_value=1)
     description = serializers.CharField(required=False, allow_blank=True)
     file = serializers.FileField()
+
+
+class EntryVersionCreateSerializer(serializers.Serializer):
+    file = serializers.FileField()
+    note = serializers.CharField(max_length=500, required=False, allow_blank=True)
+
+
+class EntryCommentCreateSerializer(serializers.Serializer):
+    body = serializers.CharField(max_length=4000, trim_whitespace=True)
 
 
 class AnnouncementUpdateSerializer(serializers.Serializer):

@@ -11,7 +11,7 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 from django.utils import timezone as django_timezone
 
-from current.models import AuditLog, Entry, ImportRun, Issue, SiteConfig, User
+from current.models import AuditLog, Entry, EntryFileVersion, ImportRun, Issue, SiteConfig, User
 
 
 class Command(BaseCommand):
@@ -146,19 +146,27 @@ class Command(BaseCommand):
         rows = connection.execute("SELECT target, node FROM permissions").fetchall()
         basic, _ = Group.objects.get_or_create(name="Current Users")
         editors, _ = Group.objects.get_or_create(name="Current Editors")
+        chiefs, _ = Group.objects.get_or_create(name="Current Chief Editors")
         administrators, _ = Group.objects.get_or_create(name="Current Administrators")
         permission_map = {permission.codename: permission for permission in Permission.objects.filter(content_type__app_label="current")}
-        basic.permissions.set([permission_map[name] for name in ("change_user",) if name in permission_map])
-        editors.permissions.set([permission_map[name] for name in ("create_entry", "review_entry", "select_entry") if name in permission_map])
+        basic.permissions.set([permission_map[name] for name in ("create_entry",) if name in permission_map])
+        editors.permissions.set([permission_map[name] for name in ("review_entry",) if name in permission_map])
+        chiefs.permissions.set([permission_map[name] for name in ("select_entry",) if name in permission_map])
         administrators.permissions.set(list(permission_map.values()))
         nodes_by_target = {}
         for target, node in rows:
             nodes_by_target.setdefault(target, set()).add(node)
         for user in User.objects.all():
-            nodes = nodes_by_target.get(user.username, set())
-            user.groups.add(basic)
-            if any(node in nodes or node.startswith("group.") for node in ("entries.review.*", "entries.select.*")):
+            direct_nodes = nodes_by_target.get(user.username, set())
+            nodes = set(direct_nodes)
+            for group_name in (node for node in direct_nodes if node.startswith("group.")):
+                nodes.update(nodes_by_target.get(group_name, set()))
+            if "entries.create.*" in nodes:
+                user.groups.add(basic)
+            if "entries.review.*" in nodes:
                 user.groups.add(editors)
+            if "entries.select.*" in nodes:
+                user.groups.add(chiefs)
             if "*" in nodes or "management" in nodes:
                 user.groups.add(administrators)
                 user.is_staff = True
@@ -205,8 +213,24 @@ class Command(BaseCommand):
         if not self.table_exists(connection, "entries"):
             return
         for row in connection.execute("SELECT uuid, issue_id, filename, page, title, origin, wordcount, description, selector, reviewer, status FROM entries").fetchall():
-            entry = Entry.objects.update_or_create(uuid=row[0], defaults={"issue_id": row[1], "filename": row[2] or "", "page": row[3], "title": row[4] or "", "origin": row[5] or "", "wordcount": row[6] or 0, "description": row[7] or "", "selector_name": row[8] or "", "reviewer_name": row[9] or "", "status": row[10] if row[10] in dict(Entry.Status.choices) else Entry.Status.PENDING})[0]
+            selector_name = (row[8] or "").strip()
+            reviewer_name = (row[9] or "").strip()
+            entry_status = row[10] if row[10] in dict(Entry.Status.choices) else Entry.Status.PENDING
+            submitter = User.objects.filter(username=selector_name).first() if selector_name else None
+            reviewer = User.objects.filter(username=reviewer_name).first() if reviewer_name else None
+            defaults = {"issue_id": row[1], "filename": row[2] or "", "page": row[3], "title": row[4] or "", "origin": row[5] or "", "wordcount": row[6] or 0, "description": row[7] or "", "submitter": submitter, "selector_name": selector_name, "reviewer_name": reviewer_name, "status": entry_status}
+            if entry_status in (Entry.Status.REVIEWED, Entry.Status.SELECTED):
+                defaults.update({"review_completed_by": reviewer, "review_completed_at": django_timezone.now()})
+            if entry_status == Entry.Status.SELECTED:
+                defaults["merged_at"] = django_timezone.now()
+            entry = Entry.objects.update_or_create(uuid=row[0], defaults=defaults)[0]
             source_path = uploads_root / str(entry.uuid)
             if source_path.exists() and not entry.file:
                 with source_path.open("rb") as source:
                     entry.file.save(entry.filename or source_path.name, File(source), save=True)
+            if entry.file:
+                EntryFileVersion.objects.get_or_create(
+                    entry=entry,
+                    version=1,
+                    defaults={"filename": entry.filename or Path(entry.file.name).name, "file": entry.file.name, "uploader": reviewer or submitter, "uploader_name": reviewer_name or selector_name, "source": EntryFileVersion.Source.LEGACY, "note": "从 Current 数据库导入"},
+                )
