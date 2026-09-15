@@ -9,7 +9,7 @@ import { api } from "@/lib/api";
 import type { Entry, Issue } from "@/lib/types";
 import { Badge, Button, Card, CardContent, CardDescription, CardHeader, CardTitle, Spinner } from "@/components/ui";
 
-const statusLabel: Record<Entry["status"], string> = { pending: "待投稿", created: "等待审核", reviewed: "审核完成", selected: "Closed as merged", invalid: "Closed as invalid" };
+const statusLabel: Record<Entry["status"], string> = { pending: "待投稿", created: "等待审核", reviewed: "审核完成", selected: "已关闭并合并", invalid: "已关闭为无效" };
 const pageNames = ["时事新闻", "第二版", "第三版", "第四版"];
 
 export default function IssuePage() {

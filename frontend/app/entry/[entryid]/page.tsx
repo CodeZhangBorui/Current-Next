@@ -10,8 +10,8 @@ import type { EntryComment, EntryFileVersion, EntryReview, EntryStateEvent, Entr
 import { Badge, Button, Card, CardContent, CardDescription, CardHeader, CardTitle, Spinner, Textarea } from "@/components/ui";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 
-const statusLabel: Record<EntryStatus, string> = { pending: "待投稿", created: "等待审核", reviewed: "审核完成", selected: "Closed as merged", invalid: "Closed as invalid" };
-type ConfirmationAction = "review" | "close-invalid" | "close-merged" | "reopen" | "delete";
+const statusLabel: Record<EntryStatus, string> = { pending: "待投稿", created: "等待审核", reviewed: "审核完成", selected: "已关闭并合并", invalid: "已关闭为无效" };
+type ConfirmationAction = "review" | "return-to-review" | "close-invalid" | "close-merged" | "reopen" | "delete";
 
 function formatTime(value: string) {
   return new Intl.DateTimeFormat("zh-CN", { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
@@ -22,7 +22,7 @@ export default function EntryReviewPage() {
   const router = useRouter();
   const [entry, setEntry] = useState<EntryReview | null>(null);
   const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState<"comment" | "upload" | "review" | "close-invalid" | "close-merged" | "reopen" | "delete" | null>(null);
+  const [busy, setBusy] = useState<"comment" | "upload" | "review" | "return-to-review" | "close-invalid" | "close-merged" | "reopen" | "delete" | null>(null);
   const [error, setError] = useState("");
   const [comment, setComment] = useState("");
   const [versionNote, setVersionNote] = useState("");
@@ -115,7 +115,22 @@ export default function EntryReviewPage() {
       setEntry(data);
       setCloseNote("");
     } catch {
-      setError(disposition === "merged" ? "无法 Close as merged，请确认审核已经完成。" : "无法 Close as invalid，请检查当前稿件状态。");
+      setError(disposition === "merged" ? "无法关闭并合并，请确认审核已经完成。" : "无法关闭为无效，请检查当前稿件状态。");
+    } finally {
+      setBusy(null);
+      setConfirmationAction(null);
+    }
+  };
+
+  const returnToReview = async () => {
+    setBusy("return-to-review");
+    setError("");
+    try {
+      const { data } = await api.post<EntryReview>(`/entries/${params.entryid}/return-to-review`, { note: closeNote });
+      setEntry(data);
+      setCloseNote("");
+    } catch {
+      setError("无法退回重新审核，请检查稿件状态和当前账号权限。");
     } finally {
       setBusy(null);
       setConfirmationAction(null);
@@ -152,6 +167,7 @@ export default function EntryReviewPage() {
 
   const confirmation = confirmationAction ? {
     review: { title: "完成稿件审核？", description: "确认后稿件将进入主编决策阶段，并停止接收新的审核文件版本。", confirmLabel: "完成审核", onConfirm: completeReview, variant: "default" as const },
+    "return-to-review": { title: "退回重新审核？", description: "稿件会回到等待审核阶段，审核者可以继续上传新版本并再次完成审核。现有文件、留言和历史记录都会保留。", confirmLabel: "重新审核", onConfirm: returnToReview, variant: "default" as const },
     "close-invalid": { title: "将稿件关闭为无效？", description: "稿件会被标记为无效并关闭讨论，但文件、留言和全部历史记录都会保留，之后仍可重新打开。", confirmLabel: "关闭为无效", onConfirm: () => closeEntry("invalid"), variant: "default" as const },
     "close-merged": { title: "将稿件关闭并合并？", description: "稿件会被标记为已选取并合并，审阅流程随即关闭；全部数据会保留，之后仍可重新打开。", confirmLabel: "关闭并合并", onConfirm: () => closeEntry("merged"), variant: "default" as const },
     reopen: { title: "重新打开稿件？", description: "稿件将恢复到关闭前的审核阶段，关闭事件仍会保留在时间线中。", confirmLabel: "重新打开", onConfirm: reopenEntry, variant: "default" as const },
@@ -171,10 +187,10 @@ export default function EntryReviewPage() {
         {entry.capabilities.can_comment ? <Card><CardHeader><CardTitle className="flex items-center gap-2 text-base"><MessageSquare className="h-5 w-5 text-primary" />参与讨论</CardTitle><CardDescription>留言会进入稿件时间线，审核者、主编和投稿者都能看到。</CardDescription></CardHeader><CardContent className="space-y-3"><Textarea className="min-h-28 resize-y" maxLength={4000} placeholder="留下修改建议、说明或终审意见..." value={comment} onChange={(event) => setComment(event.target.value)} /><div className="flex items-center justify-between"><span className="text-xs text-muted-foreground">{comment.length}/4000</span><Button disabled={busy !== null || !comment.trim()} onClick={addComment}>{busy === "comment" ? <Spinner className="mr-2" /> : <Send className="mr-2 h-4 w-4" />}发送留言</Button></div></CardContent></Card> : <div className="rounded-md border border-dashed p-5 text-center text-sm text-muted-foreground">{entry.status === "selected" || entry.status === "invalid" ? "稿件已关闭；重新打开后可继续讨论。" : "当前账号可以查看审阅记录，但不能参与讨论。"}</div>}
       </main>
       <aside className="space-y-4">
-        <Card><CardHeader><CardTitle className="text-base">审阅进度</CardTitle></CardHeader><CardContent className="space-y-1"><ProgressStep done label="投稿已提交" detail={entry.submitter?.username || entry.selector_name || "投稿者"} /><ProgressStep done={Boolean(entry.review_completed_at)} active={entry.status === "created"} label="审核完成" detail={entry.review_completed_by?.username || entry.reviewer_name || "等待审核者"} /><ProgressStep done={entry.status === "selected" || entry.status === "invalid"} active={entry.status === "reviewed"} danger={entry.status === "invalid"} label={entry.status === "invalid" ? "Closed as invalid" : entry.status === "selected" ? "Closed as merged" : "等待主编决策"} detail={entry.merged_by?.username || (entry.status === "invalid" ? "稿件已标记为无效" : "尚未关闭")} last /></CardContent></Card>
+        <Card><CardHeader><CardTitle className="text-base">审阅进度</CardTitle></CardHeader><CardContent className="space-y-1"><ProgressStep done label="投稿已提交" detail={entry.submitter?.username || entry.selector_name || "投稿者"} /><ProgressStep done={Boolean(entry.review_completed_at)} active={entry.status === "created"} label="审核完成" detail={entry.review_completed_by?.username || entry.reviewer_name || "等待审核者"} /><ProgressStep done={entry.status === "selected" || entry.status === "invalid"} active={entry.status === "reviewed"} danger={entry.status === "invalid"} label={entry.status === "invalid" ? "已关闭为无效" : entry.status === "selected" ? "已关闭并合并" : "等待主编决策"} detail={entry.merged_by?.username || (entry.status === "invalid" ? "稿件已标记为无效" : "尚未关闭")} last /></CardContent></Card>
         {entry.capabilities.can_upload_version && <Card><CardHeader><CardTitle className="flex items-center gap-2 text-base"><Upload className="h-5 w-5 text-primary" />上传审核版本</CardTitle><CardDescription>新文件会成为最新版，历史版本仍可下载。</CardDescription></CardHeader><CardContent className="space-y-3"><label className="flex min-h-24 cursor-pointer flex-col items-center justify-center rounded-md border border-dashed border-primary/40 bg-primary/[0.03] p-3 text-center"><FileText className="h-6 w-6 text-primary" /><span className="mt-2 max-w-full break-all text-sm">{versionFile?.name || "选择 Word 文件"}</span><input className="hidden" type="file" accept=".doc,.docx" onChange={(event) => setVersionFile(event.target.files?.[0] || null)} /></label><Textarea className="min-h-20 resize-y" maxLength={500} placeholder="版本说明（可选）" value={versionNote} onChange={(event) => setVersionNote(event.target.value)} /><Button className="w-full" variant="outline" disabled={busy !== null || !versionFile} onClick={uploadVersion}>{busy === "upload" ? <Spinner className="mr-2" /> : <Upload className="mr-2 h-4 w-4" />}上传新版本</Button></CardContent></Card>}
         {entry.capabilities.can_complete_review && <Button className="w-full" disabled={busy !== null} onClick={() => setConfirmationAction("review")}><CheckCircle2 className="mr-2 h-4 w-4" />我已完成稿件审核</Button>}
-        {(entry.capabilities.can_close || entry.capabilities.can_reopen) && <Card><CardHeader><CardTitle className="text-base">主编决策</CardTitle><CardDescription>关闭和重新打开都不会删除稿件数据。</CardDescription></CardHeader><CardContent className="space-y-3"><Textarea className="min-h-20 resize-y" maxLength={500} placeholder="说明原因（可选，会写入时间线）" value={closeNote} onChange={(event) => setCloseNote(event.target.value)} />{entry.capabilities.can_reopen ? <Button className="w-full" variant="outline" disabled={busy !== null} onClick={() => setConfirmationAction("reopen")}><RotateCcw className="mr-2 h-4 w-4" />重新打开</Button> : <div className="space-y-2"><Button className="w-full" variant="outline" disabled={busy !== null} onClick={() => setConfirmationAction("close-invalid")}><CircleX className="mr-2 h-4 w-4" />关闭为无效</Button>{entry.status === "reviewed" && <Button className="w-full bg-green-600 hover:bg-green-700" disabled={busy !== null} onClick={() => setConfirmationAction("close-merged")}><GitMerge className="mr-2 h-4 w-4" />关闭并合并</Button>}</div>}</CardContent></Card>}
+        {(entry.capabilities.can_close || entry.capabilities.can_reopen || entry.capabilities.can_return_to_review) && <Card><CardHeader><CardTitle className="text-base">主编决策</CardTitle><CardDescription>流程调整不会删除稿件数据，操作原因会保留在时间线中。</CardDescription></CardHeader><CardContent className="space-y-3"><Textarea className="min-h-20 resize-y" maxLength={500} placeholder="说明原因（可选，会写入时间线）" value={closeNote} onChange={(event) => setCloseNote(event.target.value)} />{entry.capabilities.can_reopen ? <Button className="w-full" variant="outline" disabled={busy !== null} onClick={() => setConfirmationAction("reopen")}><RotateCcw className="mr-2 h-4 w-4" />重新打开</Button> : <div className="space-y-2">{entry.capabilities.can_return_to_review && <Button className="w-full" variant="outline" disabled={busy !== null} onClick={() => setConfirmationAction("return-to-review")}><RotateCcw className="mr-2 h-4 w-4" />重新审核</Button>}<Button className="w-full" variant="outline" disabled={busy !== null} onClick={() => setConfirmationAction("close-invalid")}><CircleX className="mr-2 h-4 w-4" />关闭为无效</Button>{entry.status === "reviewed" && <Button className="w-full bg-green-600 hover:bg-green-700" disabled={busy !== null} onClick={() => setConfirmationAction("close-merged")}><GitMerge className="mr-2 h-4 w-4" />关闭并合并</Button>}</div>}</CardContent></Card>}
       </aside>
     </div>
     {confirmation && <ConfirmDialog open title={confirmation.title} description={confirmation.description} confirmLabel={confirmation.confirmLabel} variant={confirmation.variant} busy={busy !== null} onConfirm={confirmation.onConfirm} onOpenChange={(open) => { if (!open) setConfirmationAction(null); }} />}
@@ -197,7 +213,7 @@ function TimelineItem({ item }: { item: TimelineValue }) {
   }
   const action = item.value.action;
   const actor = item.value.actor?.username || item.value.actor_name || "系统";
-  const actionText = { review_completed: "完成了稿件审核", closed_invalid: "将稿件关闭为无效", closed_merged: "选取稿件并关闭为已合并", reopened: "重新打开了稿件" }[action];
+  const actionText = { review_completed: "完成了稿件审核", review_returned: "将稿件退回重新审核", closed_invalid: "将稿件关闭为无效", closed_merged: "选取稿件并关闭为已合并", reopened: "重新打开了稿件" }[action];
   const isInvalid = action === "closed_invalid";
   const isMerged = action === "closed_merged";
   const isReopened = action === "reopened";

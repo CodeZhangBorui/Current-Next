@@ -19,6 +19,7 @@ urlpatterns = [
     path("entries/<str:entry_uuid>/versions/<int:version_number>/file", views.entry_version_file),
     path("entries/<str:entry_uuid>/comments", views.add_entry_comment),
     path("entries/<str:entry_uuid>/complete-review", views.complete_entry_review),
+    path("entries/<str:entry_uuid>/return-to-review", views.return_entry_to_review),
     path("entries/<str:entry_uuid>/close", views.close_entry),
     path("entries/<str:entry_uuid>/merge", views.merge_entry),
     path("entries/<str:entry_uuid>/reopen", views.reopen_entry),

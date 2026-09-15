@@ -220,6 +220,36 @@ def complete_entry_review(request, entry_uuid):
     return Response(EntryReviewSerializer(entry, context={"request": request}).data)
 
 
+@api_view(["POST"])
+def return_entry_to_review(request, entry_uuid):
+    try:
+        entry = Entry.objects.select_related("issue").get(uuid=entry_uuid)
+    except Entry.DoesNotExist:
+        return Response({"detail": "投稿不存在。"}, status=status.HTTP_404_NOT_FOUND)
+    if not is_entry_chief(request.user, entry):
+        return Response({"detail": "只有主编级用户可以退回重新审核。"}, status=status.HTTP_403_FORBIDDEN)
+    if entry.status != Entry.Status.REVIEWED:
+        return Response({"detail": "只有审核完成且尚未合并的稿件可以退回重新审核。"}, status=status.HTTP_400_BAD_REQUEST)
+    serializer = EntryReopenSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    entry.status = Entry.Status.CREATED
+    entry.reviewer_name = ""
+    entry.review_completed_by = None
+    entry.review_completed_at = None
+    entry.save(update_fields=["status", "reviewer_name", "review_completed_by", "review_completed_at", "updated_at"])
+    EntryStateEvent.objects.create(
+        entry=entry,
+        action=EntryStateEvent.Action.REVIEW_RETURNED,
+        actor=request.user,
+        actor_name=request.user.username,
+        from_status=Entry.Status.REVIEWED,
+        to_status=Entry.Status.CREATED,
+        note=serializer.validated_data.get("note", ""),
+    )
+    audit("entries.review.return", request.user.username, f"退回投稿 {entry.uuid} 重新审核")
+    return Response(EntryReviewSerializer(entry, context={"request": request}).data)
+
+
 def _close_entry(entry, user, disposition, note=""):
     from_status = entry.status
     to_status = Entry.Status.SELECTED if disposition == "merged" else Entry.Status.INVALID
@@ -256,7 +286,7 @@ def close_entry(request, entry_uuid):
     serializer.is_valid(raise_exception=True)
     disposition = serializer.validated_data["disposition"]
     if disposition == "merged" and entry.status != Entry.Status.REVIEWED:
-        return Response({"detail": "只有已完成审核的稿件可以 Close as merged。"}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"detail": "只有已完成审核的稿件可以关闭并合并。"}, status=status.HTTP_400_BAD_REQUEST)
     _close_entry(entry, request.user, disposition, serializer.validated_data.get("note", ""))
     audit(f"entries.close.{disposition}", request.user.username, f"关闭投稿 {entry.uuid}")
     return Response(EntryReviewSerializer(entry, context={"request": request}).data)
@@ -271,7 +301,7 @@ def merge_entry(request, entry_uuid):
     if not is_entry_chief(request.user, entry):
         return Response({"detail": "只有主编级用户可以合并稿件。"}, status=status.HTTP_403_FORBIDDEN)
     if entry.status != Entry.Status.REVIEWED:
-        return Response({"detail": "只有已完成审核的稿件可以 Close as merged。"}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"detail": "只有已完成审核的稿件可以关闭并合并。"}, status=status.HTTP_400_BAD_REQUEST)
     _close_entry(entry, request.user, "merged")
     audit("entries.close.merged", request.user.username, f"关闭并合并投稿 {entry.uuid}")
     return Response(EntryReviewSerializer(entry, context={"request": request}).data)

@@ -81,6 +81,7 @@ class EntryReviewSerializer(EntrySerializer):
             "can_comment": can_comment_on_entry(user, obj) and obj.status not in (Entry.Status.SELECTED, Entry.Status.INVALID),
             "can_upload_version": is_entry_reviewer(user, obj) and obj.status == Entry.Status.CREATED and not obj.issue.published,
             "can_complete_review": is_entry_reviewer(user, obj) and obj.status == Entry.Status.CREATED and obj.versions.exists(),
+            "can_return_to_review": is_entry_chief(user, obj) and obj.status == Entry.Status.REVIEWED,
             "can_merge": is_entry_chief(user, obj) and obj.status == Entry.Status.REVIEWED and not obj.issue.published,
             "can_close": is_entry_chief(user, obj) and obj.status in (Entry.Status.CREATED, Entry.Status.REVIEWED),
             "can_reopen": is_entry_chief(user, obj) and obj.status in (Entry.Status.SELECTED, Entry.Status.INVALID),

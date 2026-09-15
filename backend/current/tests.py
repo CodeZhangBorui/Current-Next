@@ -219,9 +219,41 @@ class LegacyImportTests(TestCase):
             )
             self.assertEqual(locked_upload.status_code, 400)
 
+            self.client.force_login(outsider)
+            denied_return = self.client.post(
+                f"/api/v1/entries/{entry_uuid}/return-to-review",
+                {"note": "无权退回"},
+                content_type="application/json",
+            )
+            self.assertEqual(denied_return.status_code, 403)
+
             self.client.force_login(chief)
             chief_detail = self.client.get(f"/api/v1/entries/{entry_uuid}/review")
             self.assertTrue(chief_detail.json()["capabilities"]["can_merge"])
+            self.assertTrue(chief_detail.json()["capabilities"]["can_return_to_review"])
+            returned = self.client.post(
+                f"/api/v1/entries/{entry_uuid}/return-to-review",
+                {"note": "标题仍需调整"},
+                content_type="application/json",
+            )
+            self.assertEqual(returned.status_code, 200)
+            self.assertEqual(returned.json()["status"], Entry.Status.CREATED)
+            self.assertIsNone(returned.json()["review_completed_by"])
+            self.assertIsNone(returned.json()["review_completed_at"])
+            self.assertEqual(len(returned.json()["versions"]), 2)
+
+            self.client.force_login(reviewer)
+            uploaded_again = self.client.post(
+                f"/api/v1/entries/{entry_uuid}/versions",
+                {"note": "按终审意见调整", "file": SimpleUploadedFile("draft-v3.docx", b"version-three")},
+            )
+            self.assertEqual(uploaded_again.status_code, 201)
+            self.assertEqual([version["version"] for version in uploaded_again.json()["versions"]], [1, 2, 3])
+            completed_again = self.client.post(f"/api/v1/entries/{entry_uuid}/complete-review", {}, content_type="application/json")
+            self.assertEqual(completed_again.status_code, 200)
+            self.assertEqual(completed_again.json()["status"], Entry.Status.REVIEWED)
+
+            self.client.force_login(chief)
             chief_comment = self.client.post(f"/api/v1/entries/{entry_uuid}/comments", {"body": "终审通过。"}, content_type="application/json")
             self.assertEqual(chief_comment.status_code, 201)
             merged = self.client.post(f"/api/v1/entries/{entry_uuid}/merge", {}, content_type="application/json")
@@ -239,13 +271,15 @@ class LegacyImportTests(TestCase):
             self.assertIsNone(reopened_merged.json()["merged_by"])
 
             entry = Entry.objects.get(pk=entry_uuid)
-            self.assertEqual(entry.versions.count(), 2)
-            self.assertEqual(entry.filename, "draft-v2.docx")
+            self.assertEqual(entry.versions.count(), 3)
+            self.assertEqual(entry.filename, "draft-v3.docx")
             self.assertEqual(
                 list(entry.state_events.values_list("action", flat=True)),
                 [
                     EntryStateEvent.Action.CLOSED_INVALID,
                     EntryStateEvent.Action.REOPENED,
+                    EntryStateEvent.Action.REVIEW_COMPLETED,
+                    EntryStateEvent.Action.REVIEW_RETURNED,
                     EntryStateEvent.Action.REVIEW_COMPLETED,
                     EntryStateEvent.Action.CLOSED_MERGED,
                     EntryStateEvent.Action.REOPENED,

@@ -111,6 +111,7 @@ class EntryComment(models.Model):
 class EntryStateEvent(models.Model):
     class Action(models.TextChoices):
         REVIEW_COMPLETED = "review_completed", "完成审核"
+        REVIEW_RETURNED = "review_returned", "退回重新审核"
         CLOSED_INVALID = "closed_invalid", "关闭为无效"
         CLOSED_MERGED = "closed_merged", "关闭为已合并"
         REOPENED = "reopened", "重新打开"
