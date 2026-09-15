@@ -7,7 +7,6 @@ from django.db import models
 class User(AbstractUser):
     grade = models.PositiveSmallIntegerField(default=0)
     classnum = models.PositiveSmallIntegerField(default=0)
-    active = models.BooleanField(default=True)
     legacy_password_hash = models.CharField(max_length=128, blank=True)
 
     class Meta:
@@ -80,35 +79,9 @@ class AuditLog(models.Model):
         ordering = ["-timestamp"]
 
 
-class LegacyPermission(models.Model):
-    target = models.CharField(max_length=150)
-    node = models.CharField(max_length=255)
-    source = models.CharField(max_length=32, default="orion.db")
-
-
 class ImportRun(models.Model):
     started_at = models.DateTimeField(auto_now_add=True)
     completed_at = models.DateTimeField(null=True, blank=True)
     mode = models.CharField(max_length=16)
     source_fingerprint = models.CharField(max_length=64)
     report = models.JSONField(default=dict)
-
-
-class LegacySession(models.Model):
-    session = models.CharField(max_length=128, primary_key=True)
-    username = models.CharField(max_length=150)
-    created_at = models.DateTimeField()
-
-    class Meta:
-        verbose_name = "Legacy session archive"
-        verbose_name_plural = "Legacy session archives"
-
-
-class LegacySudo(models.Model):
-    token = models.CharField(max_length=128, primary_key=True)
-    username = models.CharField(max_length=150)
-    activity_at = models.DateTimeField()
-
-    class Meta:
-        verbose_name = "旧 sudo 历史归档（不可用）"
-        verbose_name_plural = "旧 sudo 历史归档（不可用）"

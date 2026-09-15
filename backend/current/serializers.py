@@ -6,7 +6,7 @@ from .models import Entry, Issue, User
 class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
-        fields = ("username", "grade", "classnum", "active", "is_staff")
+        fields = ("username", "grade", "classnum", "is_active", "is_staff")
 
 
 class IssueSerializer(serializers.ModelSerializer):

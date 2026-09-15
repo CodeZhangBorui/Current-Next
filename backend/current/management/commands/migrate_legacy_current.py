@@ -1,6 +1,5 @@
 import hashlib
 import json
-import shutil
 import sqlite3
 from contextlib import closing
 from datetime import datetime, timezone
@@ -12,7 +11,7 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 from django.utils import timezone as django_timezone
 
-from current.models import AuditLog, Entry, ImportRun, Issue, LegacyPermission, LegacySession, LegacySudo, SiteConfig, User
+from current.models import AuditLog, Entry, ImportRun, Issue, SiteConfig, User
 
 
 class Command(BaseCommand):
@@ -64,7 +63,7 @@ class Command(BaseCommand):
         return connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone() is not None
 
     def inspect(self, orion_path, current_path, uploads_root):
-        report = {"counts": {}, "files": {"referenced": 0, "missing": [], "orphaned": []}, "errors": [], "warnings": []}
+        report = {"counts": {}, "ignored_tables": ["sessions", "sudo"], "files": {"referenced": 0, "missing": [], "orphaned": []}, "errors": [], "warnings": []}
         with closing(self.connect(orion_path)) as orion, closing(self.connect(current_path)) as current:
             for connection, tables in ((orion, ("users", "sessions", "permissions", "configuration", "auditlog")), (current, ("issues", "entries", "sudo"))):
                 for table in tables:
@@ -119,7 +118,6 @@ class Command(BaseCommand):
             self.import_audit(orion)
             self.import_issues(current, uploads_root)
             self.import_entries(current, uploads_root)
-            self.import_credential_archives(orion, current)
             ImportRun.objects.create(mode="import", source_fingerprint=report["source_fingerprint"], completed_at=django_timezone.now(), report=report)
 
     def import_users(self, connection):
@@ -131,18 +129,16 @@ class Command(BaseCommand):
             user, created = User.objects.get_or_create(username=values["name"], defaults={"id": values["id"]})
             user.grade = int(values.get("grade") or 0)
             user.classnum = int(values.get("classnum") or 0)
-            user.active = str(values.get("active", "1")).lower() not in ("0", "false", "no")
+            user.is_active = str(values.get("active", "1")).lower() not in ("0", "false", "no")
             user.legacy_password_hash = values.get("passwd", "") or ""
             if created:
                 user.set_unusable_password()
-            user.save()
+            user.save(update_fields=["grade", "classnum", "is_active", "legacy_password_hash", "password"] if created else ["grade", "classnum", "is_active", "legacy_password_hash"])
 
     def import_permissions(self, connection):
         if not self.table_exists(connection, "permissions"):
             return
         rows = connection.execute("SELECT target, node FROM permissions").fetchall()
-        LegacyPermission.objects.all().delete()
-        LegacyPermission.objects.bulk_create([LegacyPermission(target=row[0], node=row[1]) for row in rows])
         basic, _ = Group.objects.get_or_create(name="Current Users")
         editors, _ = Group.objects.get_or_create(name="Current Editors")
         administrators, _ = Group.objects.get_or_create(name="Current Administrators")
@@ -196,17 +192,3 @@ class Command(BaseCommand):
             if source_path.exists() and not entry.file:
                 with source_path.open("rb") as source:
                     entry.file.save(entry.filename or source_path.name, File(source), save=True)
-
-    def import_credential_archives(self, orion_connection, current_connection):
-        LegacySession.objects.all().delete()
-        if self.table_exists(orion_connection, "sessions"):
-            LegacySession.objects.bulk_create([
-                LegacySession(session=row[0], username=row[1] or "", created_at=datetime.fromtimestamp(row[2], tz=timezone.utc))
-                for row in orion_connection.execute("SELECT session, user, created_at FROM sessions")
-            ])
-        LegacySudo.objects.all().delete()
-        if self.table_exists(current_connection, "sudo"):
-            LegacySudo.objects.bulk_create([
-                LegacySudo(token=row[0], username=row[1] or "", activity_at=datetime.fromtimestamp(row[2], tz=timezone.utc))
-                for row in current_connection.execute("SELECT token, user, activitytime FROM sudo")
-            ])

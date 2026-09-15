@@ -25,7 +25,7 @@ def csrf(request):
 @permission_classes([AllowAny])
 def login_view(request):
     user = authenticate(request, username=request.data.get("username"), password=request.data.get("password"))
-    if not user or not user.active:
+    if not user or not user.is_active:
         return Response({"detail": "用户名或密码错误。"}, status=status.HTTP_401_UNAUTHORIZED)
     login(request, user)
     audit("auth.login", user.username, "用户登录")

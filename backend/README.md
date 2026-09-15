@@ -27,4 +27,4 @@ Run a validation pass first:
 
 Remove `--dry-run` only after the report has no errors and the target database has been backed up.
 
-The new application has no sudo-token authentication. The old `sudo` rows are imported only into a read-only historical archive for audit completeness; they are never accepted as credentials. All administration is handled by Django Admin at `/admin/`.
+The new application has no sudo-token authentication. Legacy `sessions` and `sudo` tables are intentionally ignored during import because they are short-lived credentials. All administration is handled by Django Admin at `/admin/`.
