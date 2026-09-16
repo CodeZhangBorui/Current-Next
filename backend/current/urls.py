@@ -14,6 +14,7 @@ urlpatterns = [
     path("issues/<int:issue_number>", views.issue_detail),
     path("issues/<int:issue_number>/pdf/upload", views.upload_issue_pdf),
     path("issues/<int:issue_number>/publish", views.publish_issue),
+    path("issues/<int:issue_number>/unpublish", views.unpublish_issue),
     path("issues/<int:issue_number>/pdf", views.issue_pdf),
     path("issues/<int:issue_number>/entries", views.entries),
     path("entries/<str:entry_uuid>/review", views.entry_review_detail),

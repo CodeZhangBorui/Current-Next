@@ -12,7 +12,6 @@ const nextConfig: NextConfig = {
       // The `(.*)` matcher also catches the bare `/admin` request.
       { source: "/admin/:path(.*)", destination: `${backend}/admin/:path*` },
       { source: "/dj-static/:path*", destination: `${backend}/dj-static/:path*` },
-      { source: "/media/:path*", destination: `${backend}/media/:path*` },
     ];
   },
 };

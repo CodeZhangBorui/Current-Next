@@ -6,7 +6,7 @@ from django.db.models import Count, Q, Sum
 from django.http import FileResponse, Http404
 from django.utils import timezone as django_timezone
 from django.views.decorators.csrf import ensure_csrf_cookie
-from rest_framework import status
+from rest_framework import serializers, status
 from rest_framework.decorators import api_view, parser_classes, permission_classes
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -16,6 +16,7 @@ from .models import Entry, EntryComment, EntryFileVersion, EntryStateEvent, Issu
 from .permissions import can_comment_on_entry, can_manage_issue_pdf, is_entry_chief, is_entry_reviewer
 from .serializers import AnnouncementUpdateSerializer, EntryCloseSerializer, EntryCommentCreateSerializer, EntryCreateSerializer, EntryReopenSerializer, EntryReviewSerializer, EntrySerializer, EntryVersionCreateSerializer, IssueCreateSerializer, IssueSerializer, UserSerializer
 from .services import audit, get_config, set_config
+from .validators import validate_pdf_upload
 
 
 def _average_hours(rows, start_key, end_key):
@@ -24,7 +25,7 @@ def _average_hours(rows, start_key, end_key):
         for row in rows
         if row[start_key] and row[end_key] and row[end_key] >= row[start_key]
     ]
-    return round(sum(durations) / len(durations), 1) if durations else None
+    return round(sum(durations) / len(durations), 4) if durations else None
 
 
 @api_view(["GET"])
@@ -51,7 +52,12 @@ def statistics(request):
             words=Sum("entries__wordcount"),
         ).order_by("issue_number")
     )
-    timing_rows = list(Entry.objects.values("created_at", "review_completed_at", "merged_at"))
+    timing_entries = Entry.objects.exclude(
+        Q(versions__source=EntryFileVersion.Source.LEGACY)
+        | Q(state_events__note__icontains="导入")
+        | Q(state_events__note__startswith="由现有")
+    ).distinct()
+    timing_rows = list(timing_entries.values("created_at", "review_completed_at", "merged_at"))
 
     contributor_counts = {}
     for row in ranking_entries.values("submitter__username", "selector_name", "wordcount", "status"):
@@ -212,20 +218,36 @@ def _issue_pdf_response(issue, request):
     return Response(IssueSerializer(issue, context={"request": request}).data)
 
 
+def _published_issue_response(issue):
+    if issue.published:
+        return Response({"detail": "期刊已经出版，请先撤回出版后再修改稿件。"}, status=status.HTTP_400_BAD_REQUEST)
+    return None
+
+
+def _lock_entry_issue(entry):
+    entry.issue = Issue.objects.select_for_update().get(pk=entry.issue_id)
+    return entry
+
+
 @api_view(["POST"])
 @parser_classes([MultiPartParser, FormParser])
+@transaction.atomic
 def upload_issue_pdf(request, issue_number):
     try:
-        issue = Issue.objects.get(issue_number=issue_number)
+        issue = Issue.objects.select_for_update().get(issue_number=issue_number)
     except Issue.DoesNotExist:
         return Response({"detail": "期刊不存在。"}, status=status.HTTP_404_NOT_FOUND)
     if not can_manage_issue_pdf(request.user, issue):
         return Response({"detail": "只有主编级用户可以管理期刊 PDF。"}, status=status.HTTP_403_FORBIDDEN)
+    if issue.published:
+        return Response({"detail": "请先撤回出版后再替换 PDF。"}, status=status.HTTP_400_BAD_REQUEST)
     pdf = request.FILES.get("pdf")
     if not pdf:
         return Response({"detail": "请选择 PDF 文件。"}, status=status.HTTP_400_BAD_REQUEST)
-    if not pdf.name.lower().endswith(".pdf"):
-        return Response({"detail": "只支持 PDF 文件。"}, status=status.HTTP_400_BAD_REQUEST)
+    try:
+        validate_pdf_upload(pdf)
+    except serializers.ValidationError as exc:
+        return Response({"detail": exc.detail[0]}, status=status.HTTP_400_BAD_REQUEST)
     issue.pdf = pdf
     issue.save(update_fields=["pdf"])
     audit("issues.pdf.upload", request.user.username, f"上传第 {issue.issue_number} 期 PDF")
@@ -234,9 +256,10 @@ def upload_issue_pdf(request, issue_number):
 
 @api_view(["POST"])
 @parser_classes([MultiPartParser, FormParser])
+@transaction.atomic
 def publish_issue(request, issue_number):
     try:
-        issue = Issue.objects.get(issue_number=issue_number)
+        issue = Issue.objects.select_for_update().get(issue_number=issue_number)
     except Issue.DoesNotExist:
         return Response({"detail": "期刊不存在。"}, status=status.HTTP_404_NOT_FOUND)
     if not can_manage_issue_pdf(request.user, issue):
@@ -245,14 +268,33 @@ def publish_issue(request, issue_number):
         return Response({"detail": "期刊已经发布。"}, status=status.HTTP_400_BAD_REQUEST)
     if request.FILES.get("pdf"):
         pdf = request.FILES["pdf"]
-        if not pdf.name.lower().endswith(".pdf"):
-            return Response({"detail": "只支持 PDF 文件。"}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            validate_pdf_upload(pdf)
+        except serializers.ValidationError as exc:
+            return Response({"detail": exc.detail[0]}, status=status.HTTP_400_BAD_REQUEST)
         issue.pdf = pdf
     if not issue.pdf:
         return Response({"detail": "请先上传 PDF 文件再发布。"}, status=status.HTTP_400_BAD_REQUEST)
     issue.published = True
     issue.save(update_fields=["pdf", "published"])
     audit("issues.publish", request.user.username, f"发布第 {issue.issue_number} 期")
+    return _issue_pdf_response(issue, request)
+
+
+@api_view(["POST"])
+@transaction.atomic
+def unpublish_issue(request, issue_number):
+    try:
+        issue = Issue.objects.select_for_update().get(issue_number=issue_number)
+    except Issue.DoesNotExist:
+        return Response({"detail": "期刊不存在。"}, status=status.HTTP_404_NOT_FOUND)
+    if not can_manage_issue_pdf(request.user, issue):
+        return Response({"detail": "只有主编级用户可以撤回出版。"}, status=status.HTTP_403_FORBIDDEN)
+    if not issue.published:
+        return Response({"detail": "期刊当前未出版。"}, status=status.HTTP_400_BAD_REQUEST)
+    issue.published = False
+    issue.save(update_fields=["published"])
+    audit("issues.unpublish", request.user.username, f"撤回第 {issue.issue_number} 期出版")
     return _issue_pdf_response(issue, request)
 
 
@@ -269,11 +311,12 @@ def issue_pdf(request, issue_number):
 
 @api_view(["POST"])
 @parser_classes([MultiPartParser, FormParser])
+@transaction.atomic
 def entries(request, issue_number):
     if not request.user.has_perm("current.create_entry"):
         return Response({"detail": "没有创建投稿的权限。"}, status=status.HTTP_403_FORBIDDEN)
     try:
-        issue = Issue.objects.get(issue_number=issue_number)
+        issue = Issue.objects.select_for_update().get(issue_number=issue_number)
     except Issue.DoesNotExist:
         return Response({"detail": "期刊不存在。"}, status=status.HTTP_404_NOT_FOUND)
     if issue.published:
@@ -298,11 +341,13 @@ def entry_review_detail(request, entry_uuid):
 
 @api_view(["POST"])
 @parser_classes([MultiPartParser, FormParser])
+@transaction.atomic
 def upload_entry_version(request, entry_uuid):
     try:
-        entry = Entry.objects.select_related("issue").get(uuid=entry_uuid)
+        entry = Entry.objects.select_for_update().select_related("issue").get(uuid=entry_uuid)
     except Entry.DoesNotExist:
         return Response({"detail": "投稿不存在。"}, status=status.HTTP_404_NOT_FOUND)
+    _lock_entry_issue(entry)
     if not is_entry_reviewer(request.user, entry):
         return Response({"detail": "没有上传审核版本的权限。"}, status=status.HTTP_403_FORBIDDEN)
     if entry.status != Entry.Status.CREATED or entry.issue.published:
@@ -310,34 +355,36 @@ def upload_entry_version(request, entry_uuid):
     serializer = EntryVersionCreateSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
 
-    with transaction.atomic():
-        entry = Entry.objects.select_for_update().get(uuid=entry_uuid)
-        latest = entry.versions.order_by("-version").first()
-        version_number = latest.version + 1 if latest else 1
-        uploaded_file = serializer.validated_data["file"]
-        version = EntryFileVersion.objects.create(
-            entry=entry,
-            version=version_number,
-            filename=uploaded_file.name,
-            file=uploaded_file,
-            uploader=request.user,
-            uploader_name=request.user.username,
-            source=EntryFileVersion.Source.REVIEW,
-            note=serializer.validated_data.get("note", ""),
-        )
-        entry.file = version.file.name
-        entry.filename = version.filename
-        entry.save(update_fields=["file", "filename", "updated_at"])
+    latest = entry.versions.order_by("-version").first()
+    version_number = latest.version + 1 if latest else 1
+    uploaded_file = serializer.validated_data["file"]
+    version = EntryFileVersion.objects.create(
+        entry=entry,
+        version=version_number,
+        filename=uploaded_file.name,
+        file=uploaded_file,
+        uploader=request.user,
+        uploader_name=request.user.username,
+        source=EntryFileVersion.Source.REVIEW,
+        note=serializer.validated_data.get("note", ""),
+    )
+    entry.file = version.file.name
+    entry.filename = version.filename
+    entry.save(update_fields=["file", "filename", "updated_at"])
     audit("entries.version.create", request.user.username, f"为投稿 {entry.uuid} 上传 v{version.version}")
     return Response(EntryReviewSerializer(entry, context={"request": request}).data, status=status.HTTP_201_CREATED)
 
 
 @api_view(["POST"])
+@transaction.atomic
 def add_entry_comment(request, entry_uuid):
     try:
-        entry = Entry.objects.select_related("issue").get(uuid=entry_uuid)
+        entry = Entry.objects.select_for_update().select_related("issue").get(uuid=entry_uuid)
     except Entry.DoesNotExist:
         return Response({"detail": "投稿不存在。"}, status=status.HTTP_404_NOT_FOUND)
+    _lock_entry_issue(entry)
+    if response := _published_issue_response(entry.issue):
+        return response
     if not can_comment_on_entry(request.user, entry) or entry.status in (Entry.Status.SELECTED, Entry.Status.INVALID):
         return Response({"detail": "没有在此稿件留言的权限。"}, status=status.HTTP_403_FORBIDDEN)
     serializer = EntryCommentCreateSerializer(data=request.data)
@@ -348,11 +395,15 @@ def add_entry_comment(request, entry_uuid):
 
 
 @api_view(["POST"])
+@transaction.atomic
 def complete_entry_review(request, entry_uuid):
     try:
-        entry = Entry.objects.select_related("issue").get(uuid=entry_uuid)
+        entry = Entry.objects.select_for_update().select_related("issue").get(uuid=entry_uuid)
     except Entry.DoesNotExist:
         return Response({"detail": "投稿不存在。"}, status=status.HTTP_404_NOT_FOUND)
+    _lock_entry_issue(entry)
+    if response := _published_issue_response(entry.issue):
+        return response
     if not is_entry_reviewer(request.user, entry):
         return Response({"detail": "没有完成审核的权限。"}, status=status.HTTP_403_FORBIDDEN)
     if entry.status != Entry.Status.CREATED or not entry.versions.exists():
@@ -368,11 +419,15 @@ def complete_entry_review(request, entry_uuid):
 
 
 @api_view(["POST"])
+@transaction.atomic
 def return_entry_to_review(request, entry_uuid):
     try:
-        entry = Entry.objects.select_related("issue").get(uuid=entry_uuid)
+        entry = Entry.objects.select_for_update().select_related("issue").get(uuid=entry_uuid)
     except Entry.DoesNotExist:
         return Response({"detail": "投稿不存在。"}, status=status.HTTP_404_NOT_FOUND)
+    _lock_entry_issue(entry)
+    if response := _published_issue_response(entry.issue):
+        return response
     if not is_entry_chief(request.user, entry):
         return Response({"detail": "只有主编级用户可以退回重新审核。"}, status=status.HTTP_403_FORBIDDEN)
     if entry.status != Entry.Status.REVIEWED:
@@ -420,11 +475,15 @@ def _close_entry(entry, user, disposition, note=""):
 
 
 @api_view(["POST"])
+@transaction.atomic
 def close_entry(request, entry_uuid):
     try:
-        entry = Entry.objects.select_related("issue").get(uuid=entry_uuid)
+        entry = Entry.objects.select_for_update().select_related("issue").get(uuid=entry_uuid)
     except Entry.DoesNotExist:
         return Response({"detail": "投稿不存在。"}, status=status.HTTP_404_NOT_FOUND)
+    _lock_entry_issue(entry)
+    if response := _published_issue_response(entry.issue):
+        return response
     if not is_entry_chief(request.user, entry):
         return Response({"detail": "只有主编级用户可以关闭稿件。"}, status=status.HTTP_403_FORBIDDEN)
     if entry.status not in (Entry.Status.CREATED, Entry.Status.REVIEWED):
@@ -440,11 +499,15 @@ def close_entry(request, entry_uuid):
 
 
 @api_view(["POST"])
+@transaction.atomic
 def merge_entry(request, entry_uuid):
     try:
-        entry = Entry.objects.select_related("issue").get(uuid=entry_uuid)
+        entry = Entry.objects.select_for_update().select_related("issue").get(uuid=entry_uuid)
     except Entry.DoesNotExist:
         return Response({"detail": "投稿不存在。"}, status=status.HTTP_404_NOT_FOUND)
+    _lock_entry_issue(entry)
+    if response := _published_issue_response(entry.issue):
+        return response
     if not is_entry_chief(request.user, entry):
         return Response({"detail": "只有主编级用户可以合并稿件。"}, status=status.HTTP_403_FORBIDDEN)
     if entry.status != Entry.Status.REVIEWED:
@@ -455,11 +518,15 @@ def merge_entry(request, entry_uuid):
 
 
 @api_view(["POST"])
+@transaction.atomic
 def reopen_entry(request, entry_uuid):
     try:
-        entry = Entry.objects.select_related("issue").get(uuid=entry_uuid)
+        entry = Entry.objects.select_for_update().select_related("issue").get(uuid=entry_uuid)
     except Entry.DoesNotExist:
         return Response({"detail": "投稿不存在。"}, status=status.HTTP_404_NOT_FOUND)
+    _lock_entry_issue(entry)
+    if response := _published_issue_response(entry.issue):
+        return response
     if not is_entry_chief(request.user, entry):
         return Response({"detail": "只有主编级用户可以重新打开稿件。"}, status=status.HTTP_403_FORBIDDEN)
     if entry.status not in (Entry.Status.SELECTED, Entry.Status.INVALID):
@@ -482,12 +549,18 @@ def reopen_entry(request, entry_uuid):
 
 
 @api_view(["DELETE"])
+@transaction.atomic
 def remove_entry(request, entry_uuid):
     if not request.user.has_perm("current.remove_entry"):
         return Response({"detail": "没有删除投稿的权限。"}, status=status.HTTP_403_FORBIDDEN)
-    deleted, _ = Entry.objects.filter(uuid=entry_uuid).delete()
-    if not deleted:
+    try:
+        entry = Entry.objects.select_for_update().select_related("issue").get(uuid=entry_uuid)
+    except Entry.DoesNotExist:
         return Response({"detail": "投稿不存在。"}, status=status.HTTP_404_NOT_FOUND)
+    _lock_entry_issue(entry)
+    if response := _published_issue_response(entry.issue):
+        return response
+    entry.delete()
     return Response(status=status.HTTP_204_NO_CONTENT)
 
 

@@ -21,6 +21,7 @@ const statusMeta: Array<{ key: EntryStatus; label: string; color: string; bar: s
 function formatNumber(value: number) { return numberFormatter.format(value); }
 function formatDuration(value: number | null) {
   if (value === null) return "暂无数据";
+  if (value * 60 < 1) return "少于 1 分钟";
   if (value < 1) return `${Math.round(value * 60)} 分钟`;
   if (value < 48) return `${value} 小时`;
   return `${(value / 24).toFixed(1)} 天`;

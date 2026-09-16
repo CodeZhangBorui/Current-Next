@@ -1,7 +1,10 @@
 import hashlib
+import io
 import sqlite3
 import tempfile
+import zipfile
 from contextlib import closing
+from datetime import timedelta
 from pathlib import Path
 
 from django.core.management import call_command
@@ -11,8 +14,22 @@ from django.db import connection
 from django.test import Client
 from django.test import TestCase
 from django.utils import timezone
+from rest_framework.serializers import ValidationError
 
 from .models import Entry, EntryFileVersion, EntryStateEvent, Issue, User
+from .validators import MAX_UPLOAD_SIZE, validate_pdf_upload
+
+
+def valid_pdf():
+    return b"%PDF-1.4\n1 0 obj\n<<>>\nendobj\n%%EOF"
+
+
+def valid_docx():
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w") as archive:
+        archive.writestr("[Content_Types].xml", "<Types />")
+        archive.writestr("word/document.xml", "<document />")
+    return output.getvalue()
 
 
 class LegacyImportTests(TestCase):
@@ -27,6 +44,10 @@ class LegacyImportTests(TestCase):
         waiting = Entry.objects.create(issue=issue, page=2, title="待审核", origin="校内", wordcount=200, submitter=contributor, status=Entry.Status.CREATED)
         Entry.objects.create(issue=published_issue, page=1, title="已出版但待审核", origin="校内", wordcount=100, status=Entry.Status.CREATED)
         Entry.objects.create(issue=published_issue, page=2, title="已出版但待决策", origin="校内", wordcount=100, status=Entry.Status.REVIEWED)
+        legacy_issue = Issue.objects.create(issue_number=103, deadline=timezone.now())
+        legacy = Entry.objects.create(issue=legacy_issue, page=1, title="旧稿件", origin="旧系统", wordcount=50, status=Entry.Status.REVIEWED, review_completed_at=timezone.now())
+        Entry.objects.filter(pk=legacy.pk).update(created_at=timezone.now() - timedelta(hours=8))
+        EntryFileVersion.objects.create(entry=legacy, version=1, filename="legacy.docx", file="entries/legacy.docx", source=EntryFileVersion.Source.LEGACY)
         EntryFileVersion.objects.create(entry=waiting, version=1, filename="review.docx", file="entries/review.docx", uploader=reviewer, uploader_name=reviewer.username, source=EntryFileVersion.Source.REVIEW)
         EntryStateEvent.objects.create(entry=merged, action=EntryStateEvent.Action.CLOSED_MERGED, actor=reviewer, actor_name=reviewer.username, from_status=Entry.Status.REVIEWED, to_status=Entry.Status.SELECTED)
 
@@ -35,8 +56,8 @@ class LegacyImportTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         data = response.json()
-        self.assertEqual(data["summary"]["entries"], 4)
-        self.assertEqual(data["summary"]["words"], 700)
+        self.assertEqual(data["summary"]["entries"], 5)
+        self.assertEqual(data["summary"]["words"], 750)
         self.assertEqual(data["status_counts"]["created"], 2)
         self.assertEqual(data["status_counts"]["selected"], 1)
         self.assertEqual(data["issues"][0]["merged"], 1)
@@ -46,6 +67,7 @@ class LegacyImportTests(TestCase):
         self.assertNotIn("未记录", [item["username"] for item in data["collaborators"]])
         self.assertEqual(data["personal"]["reviewing"], 1)
         self.assertEqual(data["personal"]["awaiting_decision"], 0)
+        self.assertIsNone(data["workflow"]["average_review_hours"])
 
         latest = self.client.get("/api/v1/statistics?ranking_period=latest").json()
         self.assertEqual(latest["ranking_period"], "latest")
@@ -59,8 +81,8 @@ class LegacyImportTests(TestCase):
             current_db = root / "current.db"
             uploads = root / "uploads"
             (uploads / "issues").mkdir(parents=True)
-            (uploads / "entry-1").write_bytes(b"docx-data")
-            (uploads / "issues" / "1.pdf").write_bytes(b"pdf-data")
+            (uploads / "entry-1").write_bytes(valid_docx())
+            (uploads / "issues" / "1.pdf").write_bytes(valid_pdf())
 
             with closing(sqlite3.connect(orion_db)) as db:
                 db.executescript("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, passwd TEXT, grade TEXT, classnum TEXT, active TEXT); CREATE TABLE permissions (target TEXT, node TEXT); CREATE TABLE configuration (key TEXT PRIMARY KEY, value TEXT, type TEXT, defaultval TEXT); CREATE TABLE auditlog (time INTEGER, scope TEXT, executer TEXT, message TEXT);")
@@ -108,6 +130,16 @@ class LegacyImportTests(TestCase):
         untranslated = list(Permission.objects.exclude(name__regex=r"^[\u4e00-\u9fff]").values_list("codename", "name"))
         self.assertFalse(untranslated, untranslated)
 
+    def test_disabled_legacy_user_session_is_rejected(self):
+        user = User.objects.create(username="legacy-session", legacy_password_hash=hashlib.sha256(b"secret").hexdigest())
+
+        logged_in = self.client.post("/api/v1/auth/login", {"username": user.username, "password": "secret"}, content_type="application/json")
+        self.assertEqual(logged_in.status_code, 200)
+        user.is_active = False
+        user.save(update_fields=["is_active"])
+
+        self.assertEqual(self.client.get("/api/v1/auth/me").status_code, 403)
+
     def test_issue_api_uses_user_objects_for_people_fields(self):
         creator = User.objects.create_user(username="creator", password="secret")
         leader = User.objects.create_user(username="leader", password="secret")
@@ -144,7 +176,7 @@ class LegacyImportTests(TestCase):
         self.client.force_login(outsider)
         denied = self.client.post(
             f"/api/v1/issues/{issue.issue_number}/pdf/upload",
-            {"pdf": SimpleUploadedFile("issue.pdf", b"pdf-data", content_type="application/pdf")},
+            {"pdf": SimpleUploadedFile("issue.pdf", valid_pdf(), content_type="application/pdf")},
         )
         self.assertEqual(denied.status_code, 403)
 
@@ -154,7 +186,7 @@ class LegacyImportTests(TestCase):
 
         uploaded = self.client.post(
             f"/api/v1/issues/{issue.issue_number}/pdf/upload",
-            {"pdf": SimpleUploadedFile("issue.pdf", b"pdf-data", content_type="application/pdf")},
+            {"pdf": SimpleUploadedFile("issue.pdf", valid_pdf(), content_type="application/pdf")},
         )
         self.assertEqual(uploaded.status_code, 200)
         self.assertTrue(uploaded.json()["pdf_available"])
@@ -164,6 +196,69 @@ class LegacyImportTests(TestCase):
         self.assertEqual(published.status_code, 200)
         self.assertTrue(published.json()["published"])
         self.assertTrue(Issue.objects.get(pk=issue.issue_number).pdf)
+
+        frozen_upload = self.client.post(
+            f"/api/v1/issues/{issue.issue_number}/pdf/upload",
+            {"pdf": SimpleUploadedFile("replacement.pdf", valid_pdf(), content_type="application/pdf")},
+        )
+        self.assertEqual(frozen_upload.status_code, 400)
+        unpublished = self.client.post(f"/api/v1/issues/{issue.issue_number}/unpublish", {})
+        self.assertEqual(unpublished.status_code, 200)
+        self.assertFalse(unpublished.json()["published"])
+
+    def test_uploads_require_valid_content_and_enforce_size_limit(self):
+        chief = User.objects.create_user(username="upload-chief", password="secret")
+        contributor = User.objects.create_user(username="upload-contributor", password="secret")
+        issue = Issue.objects.create(issue_number=14, deadline=timezone.now(), leader=chief)
+
+        self.client.force_login(chief)
+        fake_pdf = self.client.post(
+            f"/api/v1/issues/{issue.issue_number}/pdf/upload",
+            {"pdf": SimpleUploadedFile("issue.pdf", b"not-a-pdf", content_type="application/pdf")},
+        )
+        self.assertEqual(fake_pdf.status_code, 400)
+        oversized = SimpleUploadedFile("issue.pdf", valid_pdf(), content_type="application/pdf")
+        oversized.size = MAX_UPLOAD_SIZE + 1
+        with self.assertRaises(ValidationError):
+            validate_pdf_upload(oversized)
+
+        self.client.force_login(contributor)
+        fake_word = self.client.post(
+            f"/api/v1/issues/{issue.issue_number}/entries",
+            {"page": "1", "title": "伪造文件", "origin": "校内", "wordcount": "10", "file": SimpleUploadedFile("fake.docx", b"not-a-docx")},
+        )
+        self.assertEqual(fake_word.status_code, 400)
+
+    def test_published_issue_freezes_workflow_until_unpublished(self):
+        chief = User.objects.create_user(username="freeze-chief", password="secret")
+        chief.user_permissions.add(Permission.objects.get(codename="remove_entry"))
+        issue = Issue.objects.create(issue_number=15, deadline=timezone.now(), leader=chief, published=True, pdf="issues/15.pdf")
+        issue.editors.add(chief)
+        created = Entry.objects.create(issue=issue, page=1, title="待审核", origin="校内", wordcount=10, status=Entry.Status.CREATED)
+        reviewed = Entry.objects.create(issue=issue, page=2, title="待决策", origin="校内", wordcount=10, status=Entry.Status.REVIEWED)
+        selected = Entry.objects.create(issue=issue, page=3, title="已合并", origin="校内", wordcount=10, status=Entry.Status.SELECTED, closed_from_status=Entry.Status.REVIEWED)
+        EntryFileVersion.objects.create(entry=created, version=1, filename="draft.docx", file="entries/draft.docx", source=EntryFileVersion.Source.SUBMISSION)
+        self.client.force_login(chief)
+
+        requests = [
+            self.client.post(f"/api/v1/entries/{created.uuid}/comments", {"body": "出版后留言"}, content_type="application/json"),
+            self.client.post(f"/api/v1/entries/{created.uuid}/complete-review", {}, content_type="application/json"),
+            self.client.post(f"/api/v1/entries/{reviewed.uuid}/return-to-review", {}, content_type="application/json"),
+            self.client.post(f"/api/v1/entries/{created.uuid}/close", {"disposition": "invalid"}, content_type="application/json"),
+            self.client.post(f"/api/v1/entries/{reviewed.uuid}/merge", {}, content_type="application/json"),
+            self.client.post(f"/api/v1/entries/{selected.uuid}/reopen", {}, content_type="application/json"),
+            self.client.post(f"/api/v1/entries/{created.uuid}/versions", {"file": SimpleUploadedFile("revision.docx", valid_docx())}),
+            self.client.delete(f"/api/v1/entries/{created.uuid}"),
+        ]
+        self.assertTrue(all(response.status_code == 400 for response in requests), [response.status_code for response in requests])
+        detail = self.client.get(f"/api/v1/entries/{created.uuid}/review").json()
+        self.assertFalse(any(detail["capabilities"].values()))
+
+        unpublished = self.client.post(f"/api/v1/issues/{issue.issue_number}/unpublish", {})
+        self.assertEqual(unpublished.status_code, 200)
+        self.assertEqual(self.client.get(f"/api/v1/issues/{issue.issue_number}/pdf").status_code, 404)
+        comment = self.client.post(f"/api/v1/entries/{created.uuid}/comments", {"body": "撤回后恢复"}, content_type="application/json")
+        self.assertEqual(comment.status_code, 201)
 
     def test_local_next_origin_is_allowed_for_csrf_protected_post(self):
         creator = User.objects.create_user(username="csrf-creator", password="secret")
@@ -222,7 +317,7 @@ class LegacyImportTests(TestCase):
                 "origin": "校园记者站",
                 "wordcount": "120",
                 "description": "投稿简介",
-                "file": SimpleUploadedFile("article.docx", b"document-content"),
+                "file": SimpleUploadedFile("article.docx", valid_docx()),
             },
         )
 
@@ -249,7 +344,7 @@ class LegacyImportTests(TestCase):
                     "origin": "校园记者站",
                     "wordcount": "240",
                     "description": "用于审核流程测试",
-                    "file": SimpleUploadedFile("draft-v1.docx", b"version-one"),
+                    "file": SimpleUploadedFile("draft-v1.docx", valid_docx()),
                 },
             )
             self.assertEqual(created.status_code, 201)
@@ -294,7 +389,7 @@ class LegacyImportTests(TestCase):
             self.assertEqual(comment.status_code, 201)
             uploaded = self.client.post(
                 f"/api/v1/entries/{entry_uuid}/versions",
-                {"note": "已调整标题", "file": SimpleUploadedFile("draft-v2.docx", b"version-two")},
+                {"note": "已调整标题", "file": SimpleUploadedFile("draft-v2.docx", valid_docx())},
             )
             self.assertEqual(uploaded.status_code, 201)
             self.assertEqual([version["version"] for version in uploaded.json()["versions"]], [1, 2])
@@ -303,7 +398,7 @@ class LegacyImportTests(TestCase):
             self.assertEqual(completed.json()["status"], Entry.Status.REVIEWED)
             locked_upload = self.client.post(
                 f"/api/v1/entries/{entry_uuid}/versions",
-                {"file": SimpleUploadedFile("draft-v3.docx", b"version-three")},
+                {"file": SimpleUploadedFile("draft-v3.docx", valid_docx())},
             )
             self.assertEqual(locked_upload.status_code, 400)
 
@@ -333,7 +428,7 @@ class LegacyImportTests(TestCase):
             self.client.force_login(reviewer)
             uploaded_again = self.client.post(
                 f"/api/v1/entries/{entry_uuid}/versions",
-                {"note": "按终审意见调整", "file": SimpleUploadedFile("draft-v3.docx", b"version-three")},
+                {"note": "按终审意见调整", "file": SimpleUploadedFile("draft-v3.docx", valid_docx())},
             )
             self.assertEqual(uploaded_again.status_code, 201)
             self.assertEqual([version["version"] for version in uploaded_again.json()["versions"]], [1, 2, 3])

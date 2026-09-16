@@ -2,6 +2,7 @@ from rest_framework import serializers
 
 from .models import Entry, EntryComment, EntryFileVersion, EntryStateEvent, Issue, User
 from .permissions import can_comment_on_entry, can_manage_issue_pdf, is_entry_chief, is_entry_reviewer
+from .validators import validate_word_upload
 
 
 class UserSerializer(serializers.ModelSerializer):
@@ -87,14 +88,14 @@ class EntryReviewSerializer(EntrySerializer):
     def get_capabilities(self, obj):
         user = self.context["request"].user
         return {
-            "can_comment": can_comment_on_entry(user, obj) and obj.status not in (Entry.Status.SELECTED, Entry.Status.INVALID),
+            "can_comment": not obj.issue.published and can_comment_on_entry(user, obj) and obj.status not in (Entry.Status.SELECTED, Entry.Status.INVALID),
             "can_upload_version": is_entry_reviewer(user, obj) and obj.status == Entry.Status.CREATED and not obj.issue.published,
-            "can_complete_review": is_entry_reviewer(user, obj) and obj.status == Entry.Status.CREATED and obj.versions.exists(),
-            "can_return_to_review": is_entry_chief(user, obj) and obj.status == Entry.Status.REVIEWED,
+            "can_complete_review": not obj.issue.published and is_entry_reviewer(user, obj) and obj.status == Entry.Status.CREATED and obj.versions.exists(),
+            "can_return_to_review": not obj.issue.published and is_entry_chief(user, obj) and obj.status == Entry.Status.REVIEWED,
             "can_merge": is_entry_chief(user, obj) and obj.status == Entry.Status.REVIEWED and not obj.issue.published,
-            "can_close": is_entry_chief(user, obj) and obj.status in (Entry.Status.CREATED, Entry.Status.REVIEWED),
-            "can_reopen": is_entry_chief(user, obj) and obj.status in (Entry.Status.SELECTED, Entry.Status.INVALID),
-            "can_delete": user.has_perm("current.remove_entry"),
+            "can_close": not obj.issue.published and is_entry_chief(user, obj) and obj.status in (Entry.Status.CREATED, Entry.Status.REVIEWED),
+            "can_reopen": not obj.issue.published and is_entry_chief(user, obj) and obj.status in (Entry.Status.SELECTED, Entry.Status.INVALID),
+            "can_delete": not obj.issue.published and user.has_perm("current.remove_entry"),
         }
 
 
@@ -113,11 +114,11 @@ class EntryCreateSerializer(serializers.Serializer):
     origin = serializers.CharField(max_length=255)
     wordcount = serializers.IntegerField(min_value=1)
     description = serializers.CharField(required=False, allow_blank=True)
-    file = serializers.FileField()
+    file = serializers.FileField(validators=[validate_word_upload])
 
 
 class EntryVersionCreateSerializer(serializers.Serializer):
-    file = serializers.FileField()
+    file = serializers.FileField(validators=[validate_word_upload])
     note = serializers.CharField(max_length=500, required=False, allow_blank=True)
 
 

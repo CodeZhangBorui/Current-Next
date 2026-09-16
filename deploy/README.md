@@ -27,3 +27,5 @@ cd backend
 ```
 
 The Nginx `/dj-static/` location must point to the same `backend/staticfiles/` directory used by `STATIC_ROOT`.
+
+Do not expose `backend/media/` with an Nginx `alias`. The supplied configuration returns `404` for `/media/`; private entry and version files are downloaded only through authenticated `/api/v1/` endpoints, while published issue PDFs use their dedicated API endpoint.

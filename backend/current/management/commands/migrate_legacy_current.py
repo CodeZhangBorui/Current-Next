@@ -215,9 +215,9 @@ class Command(BaseCommand):
             reviewer = User.objects.filter(username=reviewer_name).first() if reviewer_name else None
             defaults = {"issue_id": row[1], "filename": row[2] or "", "page": row[3], "title": row[4] or "", "origin": row[5] or "", "wordcount": row[6] or 0, "description": row[7] or "", "submitter": submitter, "selector_name": selector_name, "reviewer_name": reviewer_name, "status": entry_status}
             if entry_status in (Entry.Status.REVIEWED, Entry.Status.SELECTED):
-                defaults.update({"review_completed_by": reviewer, "review_completed_at": django_timezone.now()})
+                defaults.update({"review_completed_by": reviewer, "review_completed_at": None})
             if entry_status == Entry.Status.SELECTED:
-                defaults.update({"closed_from_status": Entry.Status.REVIEWED, "merged_at": django_timezone.now()})
+                defaults.update({"closed_from_status": Entry.Status.REVIEWED, "merged_at": None})
             entry = Entry.objects.update_or_create(uuid=row[0], defaults=defaults)[0]
             source_path = uploads_root / str(entry.uuid)
             if source_path.exists() and not entry.file:
