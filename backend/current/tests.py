@@ -13,10 +13,11 @@ from django.contrib.auth.models import Permission
 from django.db import connection
 from django.test import Client
 from django.test import TestCase
+from django.urls import reverse
 from django.utils import timezone
 from rest_framework.serializers import ValidationError
 
-from .models import Entry, EntryFileVersion, EntryStateEvent, Issue, User
+from .models import Entry, EntryComment, EntryFileVersion, EntryStateEvent, Issue, User
 from .validators import MAX_UPLOAD_SIZE, validate_pdf_upload
 
 
@@ -30,6 +31,92 @@ def valid_docx():
         archive.writestr("[Content_Types].xml", "<Types />")
         archive.writestr("word/document.xml", "<document />")
     return output.getvalue()
+
+
+class AdminInterfaceTests(TestCase):
+    def setUp(self):
+        self.administrator = User.objects.create_superuser(username="admin-ui", password="secret", email="admin@example.com")
+        self.issue = Issue.objects.create(issue_number=120, deadline=timezone.now(), leader=self.administrator)
+        self.entry = Entry.objects.create(
+            issue=self.issue,
+            page=1,
+            title="后台体验测试稿件",
+            origin="校内",
+            wordcount=300,
+            submitter=self.administrator,
+            status=Entry.Status.CREATED,
+        )
+        EntryFileVersion.objects.create(
+            entry=self.entry,
+            version=1,
+            filename="draft.docx",
+            file="entries/draft.docx",
+            uploader=self.administrator,
+            uploader_name=self.administrator.username,
+            source=EntryFileVersion.Source.SUBMISSION,
+        )
+        EntryComment.objects.create(
+            entry=self.entry,
+            author=self.administrator,
+            author_name=self.administrator.username,
+            body="请调整标题。",
+        )
+        EntryStateEvent.objects.create(
+            entry=self.entry,
+            action=EntryStateEvent.Action.REOPENED,
+            actor=self.administrator,
+            actor_name=self.administrator.username,
+            from_status=Entry.Status.INVALID,
+            to_status=Entry.Status.CREATED,
+        )
+        self.client.force_login(self.administrator)
+
+    def test_admin_core_pages_render_with_business_context(self):
+        urls = (
+            reverse("admin:index"),
+            reverse("admin:current_user_changelist"),
+            reverse("admin:current_issue_changelist"),
+            reverse("admin:current_entry_changelist"),
+            reverse("admin:current_entryfileversion_changelist"),
+            reverse("admin:current_entrycomment_changelist"),
+            reverse("admin:current_entrystateevent_changelist"),
+            reverse("admin:current_siteconfig_changelist"),
+            reverse("admin:current_auditlog_changelist"),
+            reverse("admin:current_importrun_changelist"),
+        )
+        for url in urls:
+            with self.subTest(url=url):
+                self.assertEqual(self.client.get(url).status_code, 200)
+
+        index = self.client.get(reverse("admin:index"))
+        self.assertContains(index, "Current 内容管理")
+        self.assertContains(index, "报刊与稿件管理")
+
+    def test_admin_change_forms_remain_editable_and_hide_technical_password_hash(self):
+        issue_form = self.client.get(reverse("admin:current_issue_change", args=(self.issue.pk,)))
+        self.assertEqual(issue_form.status_code, 200)
+        self.assertContains(issue_form, "编辑团队")
+        self.assertContains(issue_form, 'name="published"', html=False)
+
+        entry_form = self.client.get(reverse("admin:current_entry_change", args=(self.entry.pk,)))
+        self.assertEqual(entry_form.status_code, 200)
+        self.assertContains(entry_form, "审核流程")
+        self.assertContains(entry_form, "兼容记录")
+        self.assertContains(entry_form, 'name="status"', html=False)
+        self.assertContains(entry_form, 'name="versions-0-note"', html=False)
+        self.assertContains(entry_form, 'name="comments-0-body"', html=False)
+        self.assertContains(entry_form, 'name="state_events-0-note"', html=False)
+
+        user_form = self.client.get(reverse("admin:current_user_change", args=(self.administrator.pk,)))
+        self.assertEqual(user_form.status_code, 200)
+        self.assertContains(user_form, "账号状态与权限")
+        self.assertNotContains(user_form, "legacy_password_hash")
+
+    def test_model_labels_and_object_names_are_human_readable(self):
+        self.assertEqual(str(self.issue), "第 120 期")
+        self.assertEqual(str(self.entry), "第 120 期 · 后台体验测试稿件")
+        self.assertEqual(Entry._meta.get_field("review_completed_by").verbose_name, "完成审核者")
+        self.assertEqual(Issue._meta.get_field("responsible_editor").verbose_name, "主编")
 
 
 class LegacyImportTests(TestCase):
